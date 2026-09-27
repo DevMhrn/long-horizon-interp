@@ -1,0 +1,19 @@
+{
+  "pr": 5565,
+  "sha": "1e0ede529c57f9eedb23803878874c662ce96313",
+  "base": "e386ed43524519f3e52880e56d81fc17d6439dec",
+  "python": "3.11",
+  "slug": "pretix-event-cancellation-safety",
+  "must_turn_green": 23,
+  "must_stay_green": 2,
+  "gold_src_files": [
+    "src/pretix/base/services/cancelevent.py",
+    "src/pretix/base/templates/pretixbase/email/cancel_confirm.txt",
+    "src/pretix/control/forms/orders.py",
+    "src/pretix/control/templates/pretixcontrol/orders/cancel.html",
+    "src/pretix/control/templates/pretixcontrol/orders/cancel_confirm.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/orders.py",
+    "src/pretix/static/pretixcontrol/js/ui/main.js"
+  ]
+}

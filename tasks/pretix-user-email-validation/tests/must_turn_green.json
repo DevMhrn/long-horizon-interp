@@ -1,0 +1,19 @@
+[
+  "tests.control.test_auth.PasswordChangeRequiredTest::test_redirect_to_2fa_to_password_change",
+  "tests.control.test_auth.PasswordChangeRequiredTest::test_redirect_to_password_change",
+  "tests.control.test_user.UserEmailChangeTest::test_change_email_no_duplicates",
+  "tests.control.test_user.UserEmailChangeTest::test_change_email_success",
+  "tests.control.test_user.UserEmailChangeTest::test_change_email_wrong_code",
+  "tests.control.test_user.UserEmailChangeTest::test_require_reauth",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_history",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_require_new",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_require_password",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_require_repeat",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_short",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_success",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_user_attribute_similarity",
+  "tests.control.test_user.UserPasswordChangeTest::test_change_password_wrong_backend",
+  "tests.control.test_user.UserPasswordChangeTest::test_needs_password_change_changed",
+  "tests.control.test_user.UserSettingsTest::test_set_locale_and_timezone",
+  "tests.control.test_user.UserSettingsTest::test_set_name"
+]

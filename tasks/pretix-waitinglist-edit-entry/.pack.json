@@ -1,0 +1,17 @@
+{
+  "pr": 5712,
+  "sha": "eab7d81a51d6a866dfa50a616907aa0085417084",
+  "base": "b2dce51a24d234de932b280cd8464797131dbca2",
+  "python": "3.13",
+  "slug": "pretix-waitinglist-edit-entry",
+  "must_turn_green": 6,
+  "must_stay_green": 7,
+  "gold_src_files": [
+    "src/pretix/control/forms/waitinglist.py",
+    "src/pretix/control/templates/pretixcontrol/waitinglist/edit.html",
+    "src/pretix/control/templates/pretixcontrol/waitinglist/index.html",
+    "src/pretix/control/templates/pretixcontrol/waitinglist/transfer.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/waitinglist.py"
+  ]
+}

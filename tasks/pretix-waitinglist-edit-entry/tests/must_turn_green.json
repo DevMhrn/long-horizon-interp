@@ -1,0 +1,8 @@
+[
+  "tests.control.test_waitinglist::test_edit_itemvariation",
+  "tests.control.test_waitinglist::test_edit_settings",
+  "tests.control.test_waitinglist::test_edit_validations_inactive_item",
+  "tests.control.test_waitinglist::test_edit_validations_inactive_variation",
+  "tests.control.test_waitinglist::test_edit_validations_only_valid_item",
+  "tests.control.test_waitinglist::test_edit_validations_only_valid_variation"
+]

@@ -1,0 +1,14 @@
+{
+  "pr": 5715,
+  "sha": "e466c4fb72ea768e2154c443d406906611ba9f62",
+  "base": "d0d7670ca54986fdd128a7d7f50508d00254e760",
+  "python": "3.11",
+  "slug": "pretix-cart-validation-refactor",
+  "must_turn_green": 5,
+  "must_stay_green": 468,
+  "gold_src_files": [
+    "src/pretix/base/services/cart.py",
+    "src/pretix/base/services/orders.py",
+    "src/pretix/presale/views/cart.py"
+  ]
+}

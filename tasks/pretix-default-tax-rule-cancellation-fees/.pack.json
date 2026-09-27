@@ -1,0 +1,33 @@
+{
+  "pr": 4962,
+  "sha": "14ed6982a5be60fe64f333a0d1e2e6f8e6aaf10b",
+  "base": "090358833dce8b31fc79c5decebef17272c1b9ea",
+  "python": "3.11",
+  "slug": "pretix-default-tax-rule-cancellation-fees",
+  "must_turn_green": 251,
+  "must_stay_green": 1458,
+  "gold_src_files": [
+    "src/pretix/api/serializers/event.py",
+    "src/pretix/api/views/event.py",
+    "src/pretix/base/migrations/0282_taxrule_default.py",
+    "src/pretix/base/migrations/0283_taxrule_default_taxrule_backfill.py",
+    "src/pretix/base/models/event.py",
+    "src/pretix/base/models/orders.py",
+    "src/pretix/base/models/tax.py",
+    "src/pretix/base/services/cancelevent.py",
+    "src/pretix/base/services/cart.py",
+    "src/pretix/base/services/orders.py",
+    "src/pretix/base/services/tax.py",
+    "src/pretix/base/settings.py",
+    "src/pretix/control/forms/event.py",
+    "src/pretix/control/forms/item.py",
+    "src/pretix/control/forms/orders.py",
+    "src/pretix/control/templates/pretixcontrol/event/cancel.html",
+    "src/pretix/control/templates/pretixcontrol/event/payment.html",
+    "src/pretix/control/templates/pretixcontrol/event/tax_delete.html",
+    "src/pretix/control/templates/pretixcontrol/event/tax_index.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/event.py",
+    "src/pretix/control/views/main.py"
+  ]
+}

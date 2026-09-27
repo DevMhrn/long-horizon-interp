@@ -1,0 +1,7 @@
+[
+  "tests.presale.test_cart.CartTest::test_expired_cart_extend_price_change_note",
+  "tests.presale.test_checkout.CheckoutTestCase::test_confirm_subevent_disabled",
+  "tests.presale.test_checkout.CheckoutTestCase::test_confirm_subevent_payment_period_over",
+  "tests.presale.test_checkout.CheckoutTestCase::test_confirm_subevent_presale_not_yet",
+  "tests.presale.test_checkout.CheckoutTestCase::test_confirm_subevent_presale_over"
+]

@@ -1,0 +1,35 @@
+version = "1.0"
+schema_version = "1.3"
+
+[task]
+name = "collinear-candidate/pretix-reusable-media-exchange"
+authors = [{ name = "Debashis Maharana", email = "debashismaharana7854@gmail.com" }]
+
+[metadata]
+author_name = "Debashis Maharana"
+author_email = "debashismaharana7854@gmail.com"
+category = "software_engineering"
+tags = ["python", "django", "pretix", "feature-reconstruction", "long-horizon"]
+difficulty_explanation = "The feature cuts across the product model (new media policies and their validation), media-type capabilities, the check-in service (a new exchange step with its own failure modes and an organizer setting that changes barcode acceptance), the check-in API serializer and response shape, and order creation, which must honour append vs replace semantics. The agent has to find all of these layers from behavior alone, keep the long-standing check-in rules intact (hundreds of existing tests), notice and fix the inverted expiry check that silently makes expired media usable, and handle ordering subtleties: exchange only after all normal ticket checks pass, and exchange-required only when no medium is linked. A partial implementation in any one layer fails whole groups of tests."
+solution_explanation = "Add the two append policies to Item and make every place that links a medium distinguish append (add) from reuse (replace). Give media types a capability flag for registering unknown identifiers at scan time (nfc_uid only). Extend the redeem serializer with the paired exchange fields and their validation, add a medium-exchange step to the check-in service that validates organizer enablement, product media type and policy, looks up or creates the medium (incl. gift-card auto-creation) and links the position, raise an exchange-required outcome for policy new, add the reusable_media_usage_enforced organizer setting and the three new failure reasons, and correct ReusableMedium.is_expired."
+verification_explanation = "The verifier replaces the test tree and pytest config with its own copy, removes stray pytest hooks, and runs the graded test files. 87 tests must turn green (the new behavior) and 402 must stay green (no regressions). overall is 1.0 only if all of them pass and no product file tampers with pytest internals."
+expert_time_estimate_hours = 6
+
+[verifier]
+timeout_sec = 900.0
+network_mode = "no-network"
+
+[agent]
+timeout_sec = 7200.0
+user = "agent"
+# The agent may reach its model API only: no GitHub (upstream PRs/commits), no package index.
+network_mode = "allowlist"
+allowed_hosts = ["api.openai.com", "api.anthropic.com"]
+
+[environment]
+build_timeout_sec = 1800.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 10240
+gpus = 0
+network_mode = "public"

@@ -1,0 +1,7 @@
+[
+  "tests.base.test_datasync::test_assign_properties",
+  "tests.base.test_datasync::test_association_sync",
+  "tests.base.test_datasync::test_enqueue_order_twice",
+  "tests.base.test_datasync::test_legacy_name_splitting",
+  "tests.base.test_datasync::test_simple_order_sync"
+]

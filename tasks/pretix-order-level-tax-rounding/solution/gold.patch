@@ -1,0 +1,2415 @@
+diff --git a/src/pretix/api/serializers/event.py b/src/pretix/api/serializers/event.py
+index 680d1bd5..b233077e 100644
+--- a/src/pretix/api/serializers/event.py
++++ b/src/pretix/api/serializers/event.py
+@@ -829,6 +829,7 @@ class EventSettingsSerializer(SettingsSerializer):
+         'invoice_eu_currencies',
+         'invoice_logo_image',
+         'invoice_renderer_highlight_order_code',
++        'tax_rounding',
+         'cancel_allow_user',
+         'cancel_allow_user_until',
+         'cancel_allow_user_unpaid_keep',
+diff --git a/src/pretix/api/serializers/order.py b/src/pretix/api/serializers/order.py
+index ab3ff47b..808768fc 100644
+--- a/src/pretix/api/serializers/order.py
++++ b/src/pretix/api/serializers/order.py
+@@ -52,9 +52,10 @@ from pretix.base.decimal import round_decimal
+ from pretix.base.i18n import language
+ from pretix.base.invoicing.transmission import get_transmission_types
+ from pretix.base.models import (
+-    CachedFile, Checkin, Customer, Invoice, InvoiceAddress, InvoiceLine, Item,
+-    ItemVariation, Order, OrderPosition, Question, QuestionAnswer,
+-    ReusableMedium, SalesChannel, Seat, SubEvent, TaxRule, Voucher,
++    CachedFile, Checkin, Customer, Device, Invoice, InvoiceAddress,
++    InvoiceLine, Item, ItemVariation, Order, OrderPosition, Question,
++    QuestionAnswer, ReusableMedium, SalesChannel, Seat, SubEvent, TaxRule,
++    Voucher,
+ )
+ from pretix.base.models.orders import (
+     BlockedTicketSecret, CartPosition, OrderFee, OrderPayment, OrderRefund,
+@@ -64,10 +65,13 @@ from pretix.base.pdf import get_images, get_variables
+ from pretix.base.services.cart import error_messages
+ from pretix.base.services.locking import LOCK_TRUST_WINDOW, lock_objects
+ from pretix.base.services.pricing import (
+-    apply_discounts, get_line_price, get_listed_price, is_included_for_free,
++    apply_discounts, apply_rounding, get_line_price, get_listed_price,
++    is_included_for_free,
+ )
+ from pretix.base.services.quotas import QuotaAvailability
+-from pretix.base.settings import COUNTRIES_WITH_STATE_IN_ADDRESS
++from pretix.base.settings import (
++    COUNTRIES_WITH_STATE_IN_ADDRESS, ROUNDING_MODES,
++)
+ from pretix.base.signals import register_ticket_outputs
+ from pretix.helpers.countries import CachedCountries
+ from pretix.multidomain.urlreverse import build_absolute_uri
+@@ -848,14 +852,15 @@ class OrderSerializer(I18nAwareModelSerializer):
+         list_serializer_class = OrderListSerializer
+         fields = (
+             'code', 'event', 'status', 'testmode', 'secret', 'email', 'phone', 'locale', 'datetime', 'expires', 'payment_date',
+-            'payment_provider', 'fees', 'total', 'comment', 'custom_followup_at', 'invoice_address', 'positions', 'downloads',
+-            'checkin_attention', 'checkin_text', 'last_modified', 'payments', 'refunds', 'require_approval', 'sales_channel',
+-            'url', 'customer', 'valid_if_pending', 'api_meta', 'cancellation_date', 'plugin_data',
++            'payment_provider', 'fees', 'total', 'tax_rounding_mode', 'comment', 'custom_followup_at', 'invoice_address',
++            'positions', 'downloads', 'checkin_attention', 'checkin_text', 'last_modified', 'payments', 'refunds',
++            'require_approval', 'sales_channel', 'url', 'customer', 'valid_if_pending', 'api_meta', 'cancellation_date',
++            'plugin_data',
+         )
+         read_only_fields = (
+             'code', 'status', 'testmode', 'secret', 'datetime', 'expires', 'payment_date',
+-            'payment_provider', 'fees', 'total', 'positions', 'downloads', 'customer',
+-            'last_modified', 'payments', 'refunds', 'require_approval', 'sales_channel', 'cancellation_date'
++            'payment_provider', 'fees', 'total', 'tax_rounding_mode', 'positions', 'downloads', 'customer',
++            'last_modified', 'payments', 'refunds', 'require_approval', 'sales_channel', 'cancellation_date',
+         )
+ 
+     def __init__(self, *args, **kwargs):
+@@ -1174,6 +1179,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+         queryset=SalesChannel.objects.none(),
+         required=False,
+     )
++    tax_rounding_mode = serializers.ChoiceField(choices=ROUNDING_MODES, allow_null=True, required=False,)
+     locale = serializers.ChoiceField(choices=[], required=False, allow_null=True)
+ 
+     def __init__(self, *args, **kwargs):
+@@ -1190,7 +1196,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+         fields = ('code', 'status', 'testmode', 'email', 'phone', 'locale', 'payment_provider', 'fees', 'comment', 'sales_channel',
+                   'invoice_address', 'positions', 'checkin_attention', 'checkin_text', 'payment_info', 'payment_date',
+                   'consume_carts', 'force', 'send_email', 'simulate', 'customer', 'custom_followup_at',
+-                  'require_approval', 'valid_if_pending', 'expires', 'api_meta')
++                  'require_approval', 'valid_if_pending', 'expires', 'api_meta', 'tax_rounding_mode')
+ 
+     def validate_payment_provider(self, pp):
+         if pp is None:
+@@ -1716,7 +1722,31 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                 else:
+                     f.save()
+ 
+-        order.total += sum([f.value for f in fees])
++        rounding_mode = validated_data.get("tax_rounding_mode")
++        if not rounding_mode:
++            if isinstance(self.context.get("auth"), Device):
++                # Safety fallback to avoid differences in tax reporting
++                brand = self.context.get("auth").software_brand or ""
++                if "pretixPOS" in brand or "pretixKIOSK" in brand:
++                    rounding_mode = "line"
++        if not rounding_mode:
++            rounding_mode = self.context["event"].settings.tax_rounding
++        changed = apply_rounding(
++            rounding_mode,
++            self.context["event"].currency,
++            [*pos_map.values(), *fees]
++        )
++        for line in changed:
++            if isinstance(line, OrderPosition):
++                line.save(update_fields=[
++                    "price", "price_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++            elif isinstance(line, OrderFee):
++                line.save(update_fields=[
++                    "value", "value_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++
++        order.total = sum([c.price for c in pos_map.values()]) + sum([f.value for f in fees])
+         if simulate:
+             order.fees = fees
+             order.positions = pos_map.values()
+diff --git a/src/pretix/api/views/order.py b/src/pretix/api/views/order.py
+index f818192a..51d46304 100644
+--- a/src/pretix/api/views/order.py
++++ b/src/pretix/api/views/order.py
+@@ -344,6 +344,7 @@ class EventOrderViewSet(OrderViewSetMixin, viewsets.ModelViewSet):
+     def get_serializer_context(self):
+         ctx = super().get_serializer_context()
+         ctx['event'] = self.request.event
++        ctx['auth'] = self.request.auth
+         ctx['pdf_data'] = self.request.query_params.get('pdf_data', 'false').lower() == 'true'
+         return ctx
+ 
+diff --git a/src/pretix/base/migrations/0293_cartposition_price_includes_rounding_correction_and_more.py b/src/pretix/base/migrations/0293_cartposition_price_includes_rounding_correction_and_more.py
+new file mode 100644
+index 00000000..548e8422
+--- /dev/null
++++ b/src/pretix/base/migrations/0293_cartposition_price_includes_rounding_correction_and_more.py
+@@ -0,0 +1,81 @@
++# Generated by Django 4.2.17 on 2025-04-20 13:58
++
++from decimal import Decimal
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("pretixbase", "0292_giftcard_customer"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="cartposition",
++            name="price_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="cartposition",
++            name="tax_code",
++            field=models.CharField(max_length=190, null=True),
++        ),
++        migrations.AddField(
++            model_name="cartposition",
++            name="tax_value_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="orderfee",
++            name="tax_value_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="orderfee",
++            name="value_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="orderposition",
++            name="price_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="orderposition",
++            name="tax_value_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="transaction",
++            name="price_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="transaction",
++            name="tax_value_includes_rounding_correction",
++            field=models.DecimalField(
++                decimal_places=2, default=Decimal("0.00"), max_digits=13
++            ),
++        ),
++        migrations.AddField(
++            model_name="order",
++            name="tax_rounding_mode",
++            field=models.CharField(default="line", max_length=100),
++        ),
++    ]
+diff --git a/src/pretix/base/models/orders.py b/src/pretix/base/models/orders.py
+index adcb69bc..f8201f07 100644
+--- a/src/pretix/base/models/orders.py
++++ b/src/pretix/base/models/orders.py
+@@ -81,7 +81,7 @@ from pretix.base.email import get_email_context
+ from pretix.base.i18n import language
+ from pretix.base.models import Customer, User
+ from pretix.base.reldate import RelativeDateWrapper
+-from pretix.base.settings import PERSON_NAME_SCHEMES
++from pretix.base.settings import PERSON_NAME_SCHEMES, ROUNDING_MODES
+ from pretix.base.signals import allow_ticket_download, order_gracefully_delete
+ from pretix.base.timemachine import time_machine_now
+ 
+@@ -324,6 +324,11 @@ class Order(LockModel, LoggedModel):
+         # Invoice needs to be re-issued when the order is paid again
+         default=False,
+     )
++    tax_rounding_mode = models.CharField(
++        max_length=100,
++        choices=ROUNDING_MODES,
++        default="line",
++    )
+ 
+     objects = ScopedManager(OrderQuerySet.as_manager().__class__, organizer='event__organizer')
+ 
+@@ -1259,7 +1264,8 @@ class Order(LockModel, LoggedModel):
+         keys = set(target_transaction_count.keys()) | set(current_transaction_count.keys())
+         create = []
+         for k in keys:
+-            positionid, itemid, variationid, subeventid, price, taxrate, taxruleid, taxvalue, feetype, internaltype, taxcode = k
++            (positionid, itemid, variationid, subeventid, price, price_includes_rounding_correction, taxrate,
++             taxruleid, taxvalue, taxvalue_includes_rounding_correction, feetype, internaltype, taxcode) = k
+             d = target_transaction_count[k] - current_transaction_count[k]
+             if d:
+                 create.append(Transaction(
+@@ -1272,9 +1278,11 @@ class Order(LockModel, LoggedModel):
+                     variation_id=variationid,
+                     subevent_id=subeventid,
+                     price=price,
++                    price_includes_rounding_correction=price_includes_rounding_correction,
+                     tax_rate=taxrate,
+                     tax_rule_id=taxruleid,
+                     tax_value=taxvalue,
++                    tax_value_includes_rounding_correction=taxvalue_includes_rounding_correction,
+                     tax_code=taxcode,
+                     fee_type=feetype,
+                     internal_type=internaltype,
+@@ -1449,7 +1457,22 @@ class QuestionAnswer(models.Model):
+         super().delete(**kwargs)
+ 
+ 
+-class AbstractPosition(models.Model):
++class RoundingCorrectionMixin:
++
++    @property
++    def gross_price_before_rounding(self):
++        return self.price - self.price_includes_rounding_correction
++
++    @property
++    def tax_value_before_rounding(self):
++        return self.tax_value - self.tax_value_includes_rounding_correction
++
++    @property
++    def net_price_before_rounding(self):
++        return self.gross_price_before_rounding - self.tax_value_before_rounding
++
++
++class AbstractPosition(RoundingCorrectionMixin, models.Model):
+     """
+     A position can either be one line of an order or an item placed in a cart.
+ 
+@@ -1499,6 +1522,9 @@ class AbstractPosition(models.Model):
+         decimal_places=2, max_digits=13,
+         verbose_name=_("Price")
+     )
++    price_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     attendee_name_cached = models.CharField(
+         max_length=255,
+         verbose_name=_("Attendee name"),
+@@ -2272,7 +2298,7 @@ class ActivePositionManager(ScopedManager(organizer='order__event__organizer')._
+         return super().get_queryset().filter(canceled=False)
+ 
+ 
+-class OrderFee(models.Model):
++class OrderFee(RoundingCorrectionMixin, models.Model):
+     """
+     An OrderFee object represents a fee that is added to the order total independently of
+     the actual positions. This might for example be a payment or a shipping fee.
+@@ -2322,6 +2348,9 @@ class OrderFee(models.Model):
+         decimal_places=2, max_digits=13,
+         verbose_name=_("Value")
+     )
++    value_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     order = models.ForeignKey(
+         Order,
+         verbose_name=_("Order"),
+@@ -2350,6 +2379,9 @@ class OrderFee(models.Model):
+         max_digits=13, decimal_places=2,
+         verbose_name=_('Tax value')
+     )
++    tax_value_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     canceled = models.BooleanField(default=False)
+ 
+     all = ScopedManager(organizer='order__event__organizer')
+@@ -2398,17 +2430,23 @@ class OrderFee(models.Model):
+             self.fee_type, self.value
+         )
+ 
+-    def _calculate_tax(self, tax_rule=None, invoice_address=None):
++    def _calculate_tax(self, tax_rule=None, invoice_address=None, event=None):
+         if tax_rule:
+             self.tax_rule = tax_rule
+ 
+-        try:
+-            ia = invoice_address or self.order.invoice_address
+-        except InvoiceAddress.DoesNotExist:
++        if invoice_address:
++            ia = invoice_address
++        elif hasattr(self, "order"):
++            try:
++                ia = self.order.invoice_address
++            except InvoiceAddress.DoesNotExist:
++                ia = None
++        else:
+             ia = None
+ 
+-        if not self.tax_rule and self.fee_type == "payment" and self.order.event.settings.tax_rule_payment == "default":
+-            self.tax_rule = self.order.event.cached_default_tax_rule
++        event = event or self.order.event
++        if not self.tax_rule and self.fee_type == "payment" and event.settings.tax_rule_payment == "default":
++            self.tax_rule = event.cached_default_tax_rule
+ 
+         if self.tax_rule:
+             tax = self.tax_rule.tax(self.value, base_price_is='gross', invoice_address=ia, force_fixed_gross_price=True)
+@@ -2443,6 +2481,24 @@ class OrderFee(models.Model):
+         self.order.touch()
+         super().delete(**kwargs)
+ 
++    # For historical reasons, OrderFee has "value", but OrderPosition has "price". These properties
++    # help using them the same way.
++    @property
++    def price(self):
++        return self.value
++
++    @price.setter
++    def price(self, value):
++        self.value = value
++
++    @property
++    def price_includes_rounding_correction(self):
++        return self.value_includes_rounding_correction
++
++    @price_includes_rounding_correction.setter
++    def price_includes_rounding_correction(self, value):
++        self.value_includes_rounding_correction = value
++
+ 
+ class OrderPosition(AbstractPosition):
+     """
+@@ -2522,6 +2578,9 @@ class OrderPosition(AbstractPosition):
+         max_digits=13, decimal_places=2,
+         verbose_name=_('Tax value')
+     )
++    tax_value_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00"),
++    )
+ 
+     secret = models.CharField(max_length=255, null=False, blank=False, db_index=True)
+     web_secret = models.CharField(max_length=32, default=generate_secret, db_index=True)
+@@ -2694,7 +2753,14 @@ class OrderPosition(AbstractPosition):
+                         setattr(op, f.name, cp_mapping[cartpos.addon_to_id])
+                 else:
+                     setattr(op, f.name, getattr(cartpos, f.name))
+-            op._calculate_tax()
++
++            op.tax_value = cartpos.tax_value
++            op.tax_value_includes_rounding_correction = cartpos.tax_value_includes_rounding_correction
++            op.tax_rate = cartpos.tax_rate
++            op.tax_code = cartpos.tax_code
++            op.tax_rule = cartpos.item.tax_rule
++            # todo: is removing this safe? op._calculate_tax()
++
+             if cartpos.voucher:
+                 op.voucher_budget_use = cartpos.listed_price - cartpos.price_after_voucher
+ 
+@@ -3027,6 +3093,9 @@ class Transaction(models.Model):
+         decimal_places=2, max_digits=13,
+         verbose_name=_("Price")
+     )
++    price_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     tax_rate = models.DecimalField(
+         max_digits=7, decimal_places=2,
+         verbose_name=_('Tax rate')
+@@ -3044,6 +3113,9 @@ class Transaction(models.Model):
+         max_digits=13, decimal_places=2,
+         verbose_name=_('Tax value')
+     )
++    tax_value_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     fee_type = models.CharField(
+         max_length=100, choices=OrderFee.FEE_TYPES, null=True, blank=True
+     )
+@@ -3073,14 +3145,19 @@ class Transaction(models.Model):
+     @staticmethod
+     def key(obj):
+         if isinstance(obj, Transaction):
+-            return (obj.positionid, obj.item_id, obj.variation_id, obj.subevent_id, obj.price, obj.tax_rate,
+-                    obj.tax_rule_id, obj.tax_value, obj.fee_type, obj.internal_type, obj.tax_code)
++            return (obj.positionid, obj.item_id, obj.variation_id, obj.subevent_id, obj.price,
++                    obj.price_includes_rounding_correction, obj.tax_rate, obj.tax_rule_id,
++                    obj.tax_value, obj.tax_value_includes_rounding_correction, obj.fee_type,
++                    obj.internal_type, obj.tax_code)
+         elif isinstance(obj, OrderPosition):
+-            return (obj.positionid, obj.item_id, obj.variation_id, obj.subevent_id, obj.price, obj.tax_rate,
+-                    obj.tax_rule_id, obj.tax_value, None, None, obj.tax_code)
++            return (obj.positionid, obj.item_id, obj.variation_id, obj.subevent_id, obj.price,
++                    obj.price_includes_rounding_correction, obj.tax_rate, obj.tax_rule_id,
++                    obj.tax_value, obj.tax_value_includes_rounding_correction, None,
++                    None, obj.tax_code)
+         elif isinstance(obj, OrderFee):
+-            return (None, None, None, None, obj.value, obj.tax_rate,
+-                    obj.tax_rule_id, obj.tax_value, obj.fee_type, obj.internal_type, obj.tax_code)
++            return (None, None, None, None, obj.value, obj.value_includes_rounding_correction,
++                    obj.tax_rate, obj.tax_rule_id, obj.tax_value, obj.tax_value_includes_rounding_correction,
++                    obj.fee_type, obj.internal_type, obj.tax_code)
+         raise ValueError('invalid state')  # noqa
+ 
+     @property
+@@ -3091,6 +3168,14 @@ class Transaction(models.Model):
+     def full_tax_value(self):
+         return self.tax_value * self.count
+ 
++    @property
++    def full_price_includes_rounding_correction(self):
++        return self.price_includes_rounding_correction * self.count
++
++    @property
++    def full_tax_value_includes_rounding_correction(self):
++        return self.tax_value_includes_rounding_correction * self.count
++
+ 
+ class CartPosition(AbstractPosition):
+     """
+@@ -3131,6 +3216,13 @@ class CartPosition(AbstractPosition):
+         max_digits=7, decimal_places=2, default=Decimal('0.00'),
+         verbose_name=_('Tax rate')
+     )
++    tax_code = models.CharField(
++        max_length=190,
++        null=True, blank=True,
++    )
++    tax_value_includes_rounding_correction = models.DecimalField(
++        max_digits=13, decimal_places=2, default=Decimal("0.00")
++    )
+     listed_price = models.DecimalField(
+         decimal_places=2, max_digits=13, null=True,
+     )
+@@ -3171,9 +3263,15 @@ class CartPosition(AbstractPosition):
+ 
+     @property
+     def tax_value(self):
+-        net = round_decimal(self.price - (self.price * (1 - 100 / (100 + self.tax_rate))),
++        price = self.gross_price_before_rounding
++        net = round_decimal(price - (price * (1 - 100 / (100 + self.tax_rate))),
+                             self.event.currency)
+-        return self.price - net
++        return self.gross_price_before_rounding - net + self.tax_value_includes_rounding_correction
++
++    @tax_value.setter
++    def tax_value(self, value):
++        # ignore, tax value is always computed on the fly
++        pass
+ 
+     @cached_property
+     def sort_key(self):
+diff --git a/src/pretix/base/payment.py b/src/pretix/base/payment.py
+index 72f12777..61808a6f 100644
+--- a/src/pretix/base/payment.py
++++ b/src/pretix/base/payment.py
+@@ -72,7 +72,7 @@ from pretix.helpers.countries import CachedCountries
+ from pretix.helpers.format import format_map
+ from pretix.helpers.money import DecimalTextInput
+ from pretix.multidomain.urlreverse import build_absolute_uri
+-from pretix.presale.views import get_cart, get_cart_total
++from pretix.presale.views import get_cart
+ from pretix.presale.views.cart import cart_session, get_or_create_cart_id
+ 
+ logger = logging.getLogger(__name__)
+@@ -1149,12 +1149,16 @@ class FreeOrderProvider(BasePaymentProvider):
+         from .services.cart import get_fees
+ 
+         cart = get_cart(request)
+-        total = get_cart_total(request)
++
+         try:
+-            total += sum([f.value for f in get_fees(self.event, request, total, None, None, cart)])
++            fees = get_fees(event=request.event, request=request,
++                            invoice_address=None,
++                            payments=None, positions=cart)
+         except TaxRule.SaleNotAllowed:
+             # ignore for now, will fail on order creation
+-            pass
++            fees = []
++        total = sum([c.price for c in cart]) + sum([f.value for f in fees])
++
+         return total == 0
+ 
+     def order_change_allowed(self, order: Order) -> bool:
+diff --git a/src/pretix/base/services/cancelevent.py b/src/pretix/base/services/cancelevent.py
+index 89d0d82b..694ea359 100644
+--- a/src/pretix/base/services/cancelevent.py
++++ b/src/pretix/base/services/cancelevent.py
+@@ -350,7 +350,7 @@ def cancel_event(self, event: Event, subevent: int, auto_refund: bool,
+                     ocm.add_fee(f)
+ 
+             if dry_run:
+-                refund_total += max(payment_refund_sum - (o.total + ocm._totaldiff), Decimal("0.00"))
++                refund_total += max(payment_refund_sum - (o.total + ocm._totaldiff_guesstimate), Decimal("0.00"))
+             else:
+                 ocm.commit()
+                 refund_amount = payment_refund_sum - o.total
+diff --git a/src/pretix/base/services/cart.py b/src/pretix/base/services/cart.py
+index efffda37..66c7c47b 100644
+--- a/src/pretix/base/services/cart.py
++++ b/src/pretix/base/services/cart.py
+@@ -66,8 +66,8 @@ from pretix.base.reldate import RelativeDateWrapper
+ from pretix.base.services.checkin import _save_answers
+ from pretix.base.services.locking import LockTimeoutException, lock_objects
+ from pretix.base.services.pricing import (
+-    apply_discounts, get_line_price, get_listed_price, get_price,
+-    is_included_for_free,
++    apply_discounts, apply_rounding, get_line_price, get_listed_price,
++    get_price, is_included_for_free,
+ )
+ from pretix.base.services.quotas import QuotaAvailability
+ from pretix.base.services.tasks import ProfiledEventTask
+@@ -1430,11 +1430,12 @@ class CartManager:
+         )
+ 
+         for cp, (new_price, discount) in zip(positions, discount_results):
+-            if cp.price != new_price or cp.discount_id != (discount.pk if discount else None):
+-                diff += new_price - cp.price
++            if cp.gross_price_before_rounding != new_price or cp.discount_id != (discount.pk if discount else None):
++                diff += new_price - cp.gross_price_before_rounding
+                 cp.price = new_price
++                cp.price_includes_rounding_correction = Decimal("0.00")
+                 cp.discount = discount
+-                cp.save(update_fields=['price', 'discount'])
++                cp.save(update_fields=['price', 'price_includes_rounding_correction', 'discount'])
+ 
+         return diff
+ 
+@@ -1493,30 +1494,53 @@ def add_payment_to_cart(request, provider, min_value: Decimal=None, max_value: D
+     add_payment_to_cart_session(cs, provider, min_value, max_value, info_data)
+ 
+ 
+-def get_fees(event, request, total, invoice_address, payments, positions):
++def get_fees(event, request, _total_ignored_=None, invoice_address=None, payments=None, positions=None):
++    """
++    Return all fees that would be created for the current cart. Also implicitly applies rounding on the order
++    positions. A recommended usage pattern to compute the total looks like this::
++
++        cart = get_cart(request)
++        fees = get_fees(
++            event=request.event,
++            request=request,
++            invoice_address=cached_invoice_address(request),
++            payments=None,
++            positions=cart,
++        )
++        total = sum([c.price for c in cart]) + sum([f.value for f in fees])
++    """
+     if payments and not isinstance(payments, list):
+         raise TypeError("payments must now be a list")
++    if positions is None:
++        raise TypeError("Must pass positions, parameter is only optional for backwards-compat reasons")
+ 
+     fees = []
++    total = sum([c.gross_price_before_rounding for c in positions])
+     for recv, resp in fee_calculation_for_cart.send(sender=event, request=request, invoice_address=invoice_address,
+-                                                    total=total, positions=positions, payment_requests=payments):
++                                                    positions=positions, total=total, payment_requests=payments):
+         if resp:
+             fees += resp
+ 
+-    total = total + sum(f.value for f in fees)
++    for fee in fees:
++        fee._calculate_tax(invoice_address=invoice_address, event=event)
++        if fee.tax_rule and not fee.tax_rule.pk:
++            fee.tax_rule = None  # TODO: deprecate
++
++    apply_rounding(event.settings.tax_rounding, event.currency, [*positions, *fees])
++    total = sum([c.price for c in positions]) + sum([f.value for f in fees])
+ 
+     if total != 0 and payments:
+-        total_remaining = total
++        payments_assigned = Decimal("0.00")
+         for p in payments:
+             # This algorithm of treating min/max values and fees needs to stay in sync between the following
+             # places in the code base:
+             # - pretix.base.services.cart.get_fees
+             # - pretix.base.services.orders._get_fees
+             # - pretix.presale.views.CartMixin.current_selected_payments
+-            if p.get('min_value') and total_remaining < Decimal(p['min_value']):
++            if p.get('min_value') and total - payments_assigned < Decimal(p['min_value']):
+                 continue
+ 
+-            to_pay = total_remaining
++            to_pay = max(total - payments_assigned, Decimal("0.00"))
+             if p.get('max_value') and to_pay > Decimal(p['max_value']):
+                 to_pay = min(to_pay, Decimal(p['max_value']))
+ 
+@@ -1525,28 +1549,32 @@ def get_fees(event, request, total, invoice_address, payments, positions):
+                 continue
+ 
+             payment_fee = pprov.calculate_fee(to_pay)
+-            total_remaining += payment_fee
+-            to_pay += payment_fee
+-
+-            if p.get('max_value') and to_pay > Decimal(p['max_value']):
+-                to_pay = min(to_pay, Decimal(p['max_value']))
+-
+-            total_remaining -= to_pay
+-
+             if payment_fee:
+                 if event.settings.tax_rule_payment == "default":
+                     payment_fee_tax_rule = event.cached_default_tax_rule or TaxRule.zero()
+                 else:
+                     payment_fee_tax_rule = TaxRule.zero()
+                 payment_fee_tax = payment_fee_tax_rule.tax(payment_fee, base_price_is='gross', invoice_address=invoice_address)
+-                fees.append(OrderFee(
++                pf = OrderFee(
+                     fee_type=OrderFee.FEE_TYPE_PAYMENT,
+                     value=payment_fee,
+                     tax_rate=payment_fee_tax.rate,
+                     tax_value=payment_fee_tax.tax,
+                     tax_code=payment_fee_tax.code,
+                     tax_rule=payment_fee_tax_rule
+-                ))
++                )
++                fees.append(pf)
++
++                # Re-apply rounding as grand total has changed
++                apply_rounding(event.settings.tax_rounding, event.currency, [*positions, *fees])
++                total = sum([c.price for c in positions]) + sum([f.value for f in fees])
++
++                # Re-calculate to_pay as grand total has changed
++                to_pay = max(total - payments_assigned, Decimal("0.00"))
++                if p.get('max_value') and to_pay > Decimal(p['max_value']):
++                    to_pay = min(to_pay, Decimal(p['max_value']))
++
++            payments_assigned += to_pay
+ 
+     return fees
+ 
+diff --git a/src/pretix/base/services/orders.py b/src/pretix/base/services/orders.py
+index bfe817d0..b37e5847 100644
+--- a/src/pretix/base/services/orders.py
++++ b/src/pretix/base/services/orders.py
+@@ -95,7 +95,7 @@ from pretix.base.services.memberships import (
+     create_membership, validate_memberships_in_order,
+ )
+ from pretix.base.services.pricing import (
+-    apply_discounts, get_listed_price, get_price,
++    apply_discounts, apply_rounding, get_listed_price, get_price,
+ )
+ from pretix.base.services.quotas import QuotaAvailability
+ from pretix.base.services.tasks import ProfiledEventTask, ProfiledTask
+@@ -947,10 +947,11 @@ def _check_positions(event: Event, now_dt: datetime, time_machine_now_dt: dateti
+         ]
+     )
+     for cp, (new_price, discount) in zip(sorted_positions, discount_results):
+-        if cp.price != new_price or cp.discount_id != (discount.pk if discount else None):
++        if cp.gross_price_before_rounding != new_price or cp.discount_id != (discount.pk if discount else None):
+             cp.price = new_price
++            cp.price_includes_rounding_correction = Decimal("0.00")
+             cp.discount = discount
+-            cp.save(update_fields=['price', 'discount'])
++            cp.save(update_fields=['price', 'price_includes_rounding_correction', 'discount'])
+ 
+     # After applying discounts, add-on positions might still have a reference to the *old* version of the
+     # parent position, which can screw up ordering later since the system sees inconsistent data.
+@@ -973,10 +974,11 @@ def _check_positions(event: Event, now_dt: datetime, time_machine_now_dt: dateti
+         raise OrderError(err)
+ 
+ 
+-def _get_fees(positions: List[CartPosition], payment_requests: List[dict], address: InvoiceAddress,
+-              meta_info: dict, event: Event, require_approval=False):
++def _apply_rounding_and_fees(positions: List[CartPosition], payment_requests: List[dict], address: InvoiceAddress,
++                             meta_info: dict, event: Event, require_approval=False):
+     fees = []
+-    total = sum([c.price for c in positions])
++    # Pre-rounding, pre-fee total is used for fee calculation
++    total = sum([c.gross_price_before_rounding for c in positions])
+ 
+     gift_cards = []  # for backwards compatibility
+     for p in payment_requests:
+@@ -987,40 +989,53 @@ def _get_fees(positions: List[CartPosition], payment_requests: List[dict], addre
+                                                  meta_info=meta_info, positions=positions, gift_cards=gift_cards):
+         if resp:
+             fees += resp
+-    total += sum(f.value for f in fees)
+ 
+-    total_remaining = total
++    for fee in fees:
++        fee._calculate_tax(invoice_address=address, event=event)
++        if fee.tax_rule and not fee.tax_rule.pk:
++            fee.tax_rule = None  # TODO: deprecate
++
++    # Apply rounding to get final total in case no payment fees will be added
++    apply_rounding(event.settings.tax_rounding, event.currency, [*positions, *fees])
++    total = sum([c.price for c in positions]) + sum([f.value for f in fees])
++
++    payments_assigned = Decimal("0.00")
+     for p in payment_requests:
+         # This algorithm of treating min/max values and fees needs to stay in sync between the following
+         # places in the code base:
+         # - pretix.base.services.cart.get_fees
+         # - pretix.base.services.orders._get_fees
+         # - pretix.presale.views.CartMixin.current_selected_payments
+-        if p.get('min_value') and total_remaining < Decimal(p['min_value']):
++        if p.get('min_value') and total - payments_assigned < Decimal(p['min_value']):
+             p['payment_amount'] = Decimal('0.00')
+             continue
+ 
+-        to_pay = total_remaining
++        to_pay = max(total - payments_assigned, Decimal("0.00"))
+         if p.get('max_value') and to_pay > Decimal(p['max_value']):
+             to_pay = min(to_pay, Decimal(p['max_value']))
+ 
+         payment_fee = p['pprov'].calculate_fee(to_pay)
+-        total_remaining += payment_fee
+-        to_pay += payment_fee
+-
+-        if p.get('max_value') and to_pay > Decimal(p['max_value']):
+-            to_pay = min(to_pay, Decimal(p['max_value']))
+-
+-        total_remaining -= to_pay
+-
+-        p['payment_amount'] = to_pay
+         if payment_fee:
+             pf = OrderFee(fee_type=OrderFee.FEE_TYPE_PAYMENT, value=payment_fee,
+                           internal_type=p['pprov'].identifier)
++            pf._calculate_tax(invoice_address=address, event=event)
+             fees.append(pf)
+             p['fee'] = pf
+ 
+-    if total_remaining != Decimal('0.00') and not require_approval:
++            # Re-apply rounding as grand total has changed
++            apply_rounding(event.settings.tax_rounding, event.currency, [*positions, *fees])
++            total = sum([c.price for c in positions]) + sum([f.value for f in fees])
++
++            # Re-calculate to_pay as grand total has changed
++            to_pay = max(total - payments_assigned, Decimal("0.00"))
++
++            if p.get('max_value') and to_pay > Decimal(p['max_value']):
++                to_pay = min(to_pay, Decimal(p['max_value']))
++
++        payments_assigned += to_pay
++        p['payment_amount'] = to_pay
++
++    if total != payments_assigned and not require_approval:
+         raise OrderError(_("The selected payment methods do not cover the total balance."))
+ 
+     return fees
+@@ -1029,7 +1044,7 @@ def _get_fees(positions: List[CartPosition], payment_requests: List[dict], addre
+ def _create_order(event: Event, *, email: str, positions: List[CartPosition], now_dt: datetime,
+                   payment_requests: List[dict], sales_channel: SalesChannel, locale: str=None,
+                   address: InvoiceAddress=None, meta_info: dict=None, shown_total=None,
+-                  customer=None, valid_if_pending=False, api_meta: dict=None):
++                  customer=None, valid_if_pending=False, api_meta: dict=None, tax_rounding_mode=None):
+     payments = []
+ 
+     try:
+@@ -1038,10 +1053,13 @@ def _create_order(event: Event, *, email: str, positions: List[CartPosition], no
+         raise OrderError(e.message)
+ 
+     require_approval = any(p.requires_approval(invoice_address=address) for p in positions)
++
++    # Final calculation of fees, also performs final rounding
+     try:
+-        fees = _get_fees(positions, payment_requests, address, meta_info, event, require_approval=require_approval)
++        fees = _apply_rounding_and_fees(positions, payment_requests, address, meta_info, event, require_approval=require_approval)
+     except TaxRule.SaleNotAllowed:
+         raise OrderError(error_messages['country_blocked'])
++
+     total = pending_sum = sum([c.price for c in positions]) + sum([c.value for c in fees])
+ 
+     order = Order(
+@@ -1059,6 +1077,7 @@ def _create_order(event: Event, *, email: str, positions: List[CartPosition], no
+         sales_channel=sales_channel,
+         customer=customer,
+         valid_if_pending=valid_if_pending,
++        tax_rounding_mode=tax_rounding_mode or event.settings.tax_rounding,
+     )
+     if customer:
+         order.email_known_to_work = customer.is_verified
+@@ -1073,12 +1092,6 @@ def _create_order(event: Event, *, email: str, positions: List[CartPosition], no
+ 
+     for fee in fees:
+         fee.order = order
+-        try:
+-            fee._calculate_tax()
+-        except TaxRule.SaleNotAllowed:
+-            raise OrderError(error_messages['country_blocked'])
+-        if fee.tax_rule and not fee.tax_rule.pk:
+-            fee.tax_rule = None  # TODO: deprecate
+         fee.save()
+ 
+     # Safety check: Is the amount we're now going to charge the same amount the user has been shown when they
+@@ -1167,7 +1180,7 @@ def _order_placed_email_attendee(event: Event, order: Order, position: OrderPosi
+ 
+ def _perform_order(event: Event, payment_requests: List[dict], position_ids: List[str],
+                    email: str, locale: str, address: int, meta_info: dict=None, sales_channel: str='web',
+-                   shown_total=None, customer=None, api_meta: dict=None):
++                   shown_total=None, customer=None, api_meta: dict=None, tax_rounding_mode=None):
+     for p in payment_requests:
+         p['pprov'] = event.get_payment_providers(cached=True)[p['provider']]
+         if not p['pprov']:
+@@ -1273,6 +1286,7 @@ def _perform_order(event: Event, payment_requests: List[dict], position_ids: Lis
+                 customer=customer,
+                 valid_if_pending=valid_if_pending,
+                 api_meta=api_meta,
++                tax_rounding_mode=tax_rounding_mode,
+             )
+ 
+             try:
+@@ -1664,7 +1678,7 @@ class OrderChangeManager:
+         self.split_order = None
+         self.reissue_invoice = reissue_invoice
+         self._committed = False
+-        self._totaldiff = 0
++        self._totaldiff_guesstimate = 0
+         self._quotadiff = Counter()
+         self._seatdiff = Counter()
+         self._operations = []
+@@ -1781,7 +1795,7 @@ class OrderChangeManager:
+         if position.issued_gift_cards.exists():
+             raise OrderError(self.error_messages['gift_card_change'])
+ 
+-        self._totaldiff += price.gross - position.price
++        self._totaldiff_guesstimate += price.gross - position.gross_price_before_rounding
+ 
+         if self.order.event.settings.invoice_include_free or price.gross != Decimal('0.00') or position.price != Decimal('0.00'):
+             self._invoice_dirty = True
+@@ -1826,29 +1840,29 @@ class OrderChangeManager:
+                 else:
+                     new_tax = tax_rule.tax(pos.price, base_price_is='gross', currency=self.event.currency,
+                                            override_tax_rate=new_rate, override_tax_code=new_code)
+-                self._totaldiff += new_tax.gross - pos.price
++                self._totaldiff_guesstimate += new_tax.gross - pos.price
+                 self._operations.append(self.PriceOperation(pos, new_tax, new_tax.gross - pos.price))
+                 self._invoice_dirty = True
+ 
+     def cancel_fee(self, fee: OrderFee):
+-        self._totaldiff -= fee.value
++        self._totaldiff_guesstimate -= fee.value
+         self._operations.append(self.CancelFeeOperation(fee, -fee.value))
+         self._invoice_dirty = True
+ 
+     def add_fee(self, fee: OrderFee):
+-        self._totaldiff += fee.value
++        self._totaldiff_guesstimate += fee.value
+         self._invoice_dirty = True
+         self._operations.append(self.AddFeeOperation(fee, fee.value))
+ 
+     def change_fee(self, fee: OrderFee, value: Decimal):
+         value = (fee.tax_rule or TaxRule.zero()).tax(value, base_price_is='gross', invoice_address=self._invoice_address,
+                                                      force_fixed_gross_price=True)
+-        self._totaldiff += value.gross - fee.value
++        self._totaldiff_guesstimate += value.gross - fee.value
+         self._invoice_dirty = True
+         self._operations.append(self.FeeValueOperation(fee, value, value.gross - fee.value))
+ 
+     def cancel(self, position: OrderPosition):
+-        self._totaldiff -= position.price
++        self._totaldiff_guesstimate -= position.price
+         self._quotadiff.subtract(position.quotas)
+         self._operations.append(self.CancelOperation(position, -position.price))
+         if position.seat:
+@@ -1914,7 +1928,7 @@ class OrderChangeManager:
+         if self.order.event.settings.invoice_include_free or price.gross != Decimal('0.00'):
+             self._invoice_dirty = True
+ 
+-        self._totaldiff += price.gross
++        self._totaldiff_guesstimate += price.gross
+         self._quotadiff.update(new_quotas)
+         if seat:
+             self._seatdiff.update([seat])
+@@ -2210,8 +2224,8 @@ class OrderChangeManager:
+             if avail[0] != Quota.AVAILABILITY_OK or (avail[1] is not None and avail[1] < diff):
+                 raise OrderError(self.error_messages['quota'].format(name=quota.name))
+ 
+-    def _check_paid_price_change(self):
+-        if self.order.status == Order.STATUS_PAID and self._totaldiff > 0:
++    def _check_paid_price_change(self, totaldiff):
++        if self.order.status == Order.STATUS_PAID and totaldiff > 0:
+             if self.order.pending_sum > Decimal('0.00'):
+                 self.order.status = Order.STATUS_PENDING
+                 self.order.set_expires(
+@@ -2219,7 +2233,7 @@ class OrderChangeManager:
+                     self.order.event.subevents.filter(id__in=self.order.positions.values_list('subevent_id', flat=True))
+                 )
+                 self.order.save()
+-        elif self.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) and self._totaldiff < 0:
++        elif self.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) and totaldiff < 0:
+             if self.order.pending_sum <= Decimal('0.00') and not self.order.require_approval:
+                 self.order.status = Order.STATUS_PAID
+                 self.order.save()
+@@ -2246,7 +2260,7 @@ class OrderChangeManager:
+                         user=self.user,
+                         auth=self.auth
+                     )
+-        elif self.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) and self._totaldiff > 0:
++        elif self.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) and totaldiff > 0:
+             if self.open_payment:
+                 try:
+                     self.open_payment.payment_provider.cancel_payment(self.open_payment)
+@@ -2266,11 +2280,11 @@ class OrderChangeManager:
+                         auth=self.auth,
+                     )
+ 
+-    def _check_paid_to_free(self):
+-        if self.event.currency == 'XXX' and self.order.total + self._totaldiff > Decimal("0.00"):
++    def _check_paid_to_free(self, totaldiff):
++        if self.event.currency == 'XXX' and self.order.total + totaldiff > Decimal("0.00"):
+             raise OrderError(error_messages['currency_XXX'])
+ 
+-        if self.order.total == 0 and (self._totaldiff < 0 or (self.split_order and self.split_order.total > 0)) and not self.order.require_approval:
++        if self.order.total == 0 and (totaldiff < 0 or (self.split_order and self.split_order.total > 0)) and not self.order.require_approval:
+             if not self.order.fees.exists() and not self.order.positions.exists():
+                 # The order is completely empty now, so we cancel it.
+                 self.order.status = Order.STATUS_CANCELED
+@@ -2278,7 +2292,7 @@ class OrderChangeManager:
+                 order_canceled.send(self.order.event, order=self.order)
+             elif self.order.status != Order.STATUS_CANCELED:
+                 # if the order becomes free, mark it paid using the 'free' provider
+-                # this could happen if positions have been made cheaper or removed (_totaldiff < 0)
++                # this could happen if positions have been made cheaper or removed (totaldiff < 0)
+                 # or positions got split off to a new order (split_order with positive total)
+                 p = self.order.payments.create(
+                     state=OrderPayment.PAYMENT_STATE_CREATED,
+@@ -2407,10 +2421,15 @@ class OrderChangeManager:
+                     'new_price': op.price.gross
+                 })
+                 position.price = op.price.gross
++                position.price_includes_rounding_correction = Decimal("0.00")
+                 position.tax_rate = op.price.rate
+                 position.tax_value = op.price.tax
++                position.tax_value_includes_rounding_correction = Decimal("0.00")
+                 position.tax_code = op.price.code
+-                position.save(update_fields=['price', 'tax_rate', 'tax_value', 'tax_code'])
++                position.save(update_fields=[
++                    'price', 'price_includes_rounding_correction', 'tax_rate', 'tax_value',
++                    'tax_value_includes_rounding_correction', 'tax_code'
++                ])
+             elif isinstance(op, self.TaxRuleOperation):
+                 if isinstance(op.position, OrderPosition):
+                     position = position_cache.setdefault(op.position.pk, op.position)
+@@ -2677,14 +2696,18 @@ class OrderChangeManager:
+         except InvoiceAddress.DoesNotExist:
+             pass
+ 
+-        split_order.total = sum([p.price for p in split_positions if not p.canceled])
+-
++        fees = []
+         for fee in self.order.fees.exclude(fee_type=OrderFee.FEE_TYPE_PAYMENT):
+             new_fee = modelcopy(fee)
+             new_fee.pk = None
+             new_fee.order = split_order
+-            split_order.total += new_fee.value
+             new_fee.save()
++            fees.append(new_fee)
++
++        changed_by_rounding = set(apply_rounding(
++            self.order.tax_rounding_mode, self.event.currency, [p for p in split_positions if not p.canceled] + fees
++        ))
++        split_order.total = sum([p.price for p in split_positions if not p.canceled])
+ 
+         if split_order.total != Decimal('0.00') and self.order.status != Order.STATUS_PAID:
+             pp = self._get_payment_provider()
+@@ -2697,9 +2720,27 @@ class OrderChangeManager:
+             fee._calculate_tax()
+             if payment_fee != 0:
+                 fee.save()
++                fees.append(fee)
+             elif fee.pk:
++                if fee in fees:
++                    fees.remove(fee)
+                 fee.delete()
+-            split_order.total += fee.value
++
++            changed_by_rounding |= set(apply_rounding(
++                self.order.tax_rounding_mode, self.event.currency, [p for p in split_positions if not p.canceled] + fees
++            ))
++            split_order.total = sum([p.price for p in split_positions if not p.canceled]) + sum([f.value for f in fees])
++
++        for l in changed_by_rounding:
++            if isinstance(l, OrderPosition):
++                l.save(update_fields=[
++                    "price", "price_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++            elif isinstance(l, OrderFee):
++                l.save(update_fields=[
++                    "value", "value_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++        split_order.total = sum([p.price for p in split_positions if not p.canceled]) + sum([f.value for f in fees])
+ 
+         remaining_total = sum([p.price for p in self.order.positions.all()]) + sum([f.value for f in self.order.fees.all()])
+         offset_amount = min(max(0, self.completed_payment_sum - remaining_total), split_order.total)
+@@ -2759,9 +2800,12 @@ class OrderChangeManager:
+         ).aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+         return payment_sum - refund_sum
+ 
+-    def _recalculate_total_and_payment_fee(self):
+-        total = sum([p.price for p in self.order.positions.all()]) + sum([f.value for f in self.order.fees.all()])
++    def _recalculate_rounding_total_and_payment_fee(self):
++        positions = list(self.order.positions.all())
++        fees = list(self.order.fees.all())
++        total = sum([p.price for p in positions]) + sum([f.value for f in fees])
+         payment_fee = Decimal('0.00')
++        fee_changed = False
+         if self.open_payment:
+             current_fee = Decimal('0.00')
+             fee = None
+@@ -2789,14 +2833,32 @@ class OrderChangeManager:
+                 fee.value = payment_fee
+                 fee._calculate_tax()
+                 fee.save()
++                fee_changed = True
+                 if not self.open_payment.fee:
+                     self.open_payment.fee = fee
+                     self.open_payment.save(update_fields=['fee'])
+             elif fee and not fee.canceled:
+                 fee.delete()
+-
+-        self.order.total = total + payment_fee
++                fee_changed = True
++
++        if fee_changed:
++            fees = list(self.order.fees.all())
++
++        changed = apply_rounding(self.order.tax_rounding_mode, self.order.event.currency, [*positions, *fees])
++        for l in changed:
++            if isinstance(l, OrderPosition):
++                l.save(update_fields=[
++                    "price", "price_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++            elif isinstance(l, OrderFee):
++                l.save(update_fields=[
++                    "value", "value_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++                ])
++        total = sum([p.price for p in positions]) + sum([f.value for f in fees])
++
++        self.order.total = total
+         self.order.save()
++        return total
+ 
+     def _check_order_size(self):
+         if (len(self.order.positions.all()) + len([op for op in self._operations if isinstance(op, self.AddOperation)])) > settings.PRETIX_MAX_ORDER_SIZE:
+@@ -2806,23 +2868,6 @@ class OrderChangeManager:
+                 }
+             )
+ 
+-    def _payment_fee_diff(self):
+-        total = self.order.total + self._totaldiff
+-        if self.open_payment:
+-            current_fee = Decimal('0.00')
+-            if self.open_payment and self.open_payment.fee:
+-                current_fee = self.open_payment.fee.value
+-            total -= current_fee
+-
+-            # Do not change payment fees of paid orders
+-            payment_fee = Decimal('0.00')
+-            if self.order.pending_sum - current_fee != 0:
+-                prov = self.open_payment.payment_provider
+-                if prov:
+-                    payment_fee = prov.calculate_fee(total - self.completed_payment_sum)
+-
+-                self._totaldiff += payment_fee - current_fee
+-
+     def _reissue_invoice(self):
+         i = self.order.invoices.filter(is_cancellation=False).last()
+         if self.reissue_invoice and self._invoice_dirty:
+@@ -2953,6 +2998,13 @@ class OrderChangeManager:
+                 shared_lock_objects=[self.event]
+             )
+ 
++    def guess_totaldiff(self):
++        """
++        Return the estimated difference of ``order.total`` based on the currently queued operations. This is only
++        a guess since it does not account for (a) tax rounding or (b) payment fee changes.
++        """
++        return self._totaldiff_guesstimate
++
+     def commit(self, check_quotas=True):
+         if self._committed:
+             # an order change can only be committed once
+@@ -2968,8 +3020,6 @@ class OrderChangeManager:
+         # so it's dangerous to keep the cache around.
+         self.order._prefetched_objects_cache = {}
+ 
+-        # finally, incorporate difference in payment fees
+-        self._payment_fee_diff()
+         self._check_order_size()
+ 
+         with transaction.atomic():
+@@ -2977,6 +3027,7 @@ class OrderChangeManager:
+             if locked_instance.last_modified != self.order.last_modified:
+                 raise OrderError(error_messages['race_condition'])
+ 
++            original_total = self.order.total
+             if self.order.status in (Order.STATUS_PENDING, Order.STATUS_PAID):
+                 if check_quotas:
+                     self._check_quotas()
+@@ -2988,9 +3039,10 @@ class OrderChangeManager:
+                 self._perform_operations()
+             except TaxRule.SaleNotAllowed:
+                 raise OrderError(self.error_messages['tax_rule_country_blocked'])
+-            self._recalculate_total_and_payment_fee()
+-            self._check_paid_price_change()
+-            self._check_paid_to_free()
++            new_total = self._recalculate_rounding_total_and_payment_fee()
++            totaldiff = new_total - original_total
++            self._check_paid_price_change(totaldiff)
++            self._check_paid_to_free(totaldiff)
+             if self.order.status in (Order.STATUS_PENDING, Order.STATUS_PAID):
+                 self._reissue_invoice()
+             self._clear_tickets_cache()
+@@ -3209,6 +3261,7 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
+         raise Exception('change_payment_provider should only be called in atomic transaction!')
+ 
+     oldtotal = order.total
++    already_paid = order.payment_refund_sum
+     e = OrderPayment.objects.filter(fee=OuterRef('pk'), state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED,
+                                                                    OrderPayment.PAYMENT_STATE_REFUNDED))
+     open_fees = list(
+@@ -3225,19 +3278,46 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
+         fee = OrderFee(fee_type=OrderFee.FEE_TYPE_PAYMENT, value=Decimal('0.00'), order=order)
+     old_fee = fee.value
+ 
++    positions = list(order.positions.all())
++    fees = list(order.fees.all())
++    rounding_changed = set(apply_rounding(
++        order.tax_rounding_mode, order.event.currency, [*positions, *[f for f in fees if f.pk != fee.pk]]
++    ))
++    total_without_fee = sum(c.price for c in positions) + sum(f.value for f in fees if f.pk != fee.pk)
++    pending_sum_without_fee = max(Decimal("0.00"), total_without_fee - already_paid)
++
+     new_fee = payment_provider.calculate_fee(
+-        order.pending_sum - old_fee if amount is None else amount
++        pending_sum_without_fee if amount is None else amount
+     )
+     if new_fee:
+         fee.value = new_fee
+         fee.internal_type = payment_provider.identifier
+         fee._calculate_tax()
++        if fee in fees:
++            fees.remove(fee)
++        # "Update instance in the fees array
++        fees.append(fee)
+         fee.save()
+     else:
++        if fee in fees:
++            fees.remove(fee)
+         if fee.pk:
+             fee.delete()
+         fee = None
+ 
++    rounding_changed |= set(apply_rounding(
++        order.tax_rounding_mode, order.event.currency, [*positions, *fees]
++    ))
++    for l in rounding_changed:
++        if isinstance(l, OrderPosition):
++            l.save(update_fields=[
++                "price", "price_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++            ])
++        elif isinstance(l, OrderFee):
++            l.save(update_fields=[
++                "value", "value_includes_rounding_correction", "tax_value", "tax_value_includes_rounding_correction"
++            ])
++
+     open_payment = None
+     if new_payment:
+         lp = order.payments.select_for_update(of=OF_SELF).exclude(pk=new_payment.pk).last()
+@@ -3264,7 +3344,7 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
+                 },
+             )
+ 
+-    order.total = (order.positions.aggregate(sum=Sum('price'))['sum'] or 0) + (order.fees.aggregate(sum=Sum('value'))['sum'] or 0)
++    order.total = sum(c.price for c in positions) + sum(f.value for f in fees)
+     order.save(update_fields=['total'])
+ 
+     if not new_payment:
+diff --git a/src/pretix/base/services/pricing.py b/src/pretix/base/services/pricing.py
+index 5ac9dbea..6f03a913 100644
+--- a/src/pretix/base/services/pricing.py
++++ b/src/pretix/base/services/pricing.py
+@@ -23,15 +23,17 @@ import re
+ from collections import defaultdict
+ from datetime import datetime
+ from decimal import Decimal
+-from typing import List, Optional, Tuple, Union
++from itertools import groupby
++from typing import List, Literal, Optional, Tuple, Union
+ 
+ from django import forms
++from django.conf import settings
+ from django.db.models import Q
+ 
+ from pretix.base.decimal import round_decimal
+ from pretix.base.models import (
+-    AbstractPosition, InvoiceAddress, Item, ItemAddOn, ItemVariation,
+-    SalesChannel, Voucher,
++    AbstractPosition, CartPosition, InvoiceAddress, Item, ItemAddOn,
++    ItemVariation, OrderFee, OrderPosition, SalesChannel, Voucher,
+ )
+ from pretix.base.models.discount import Discount, PositionInfo
+ from pretix.base.models.event import Event, SubEvent
+@@ -136,7 +138,8 @@ def get_listed_price(item: Item, variation: ItemVariation = None, subevent: SubE
+ 
+ 
+ def get_line_price(price_after_voucher: Decimal, custom_price_input: Decimal, custom_price_input_is_net: bool,
+-                   tax_rule: TaxRule, invoice_address: InvoiceAddress, bundled_sum: Decimal, is_bundled=False) -> TaxedPrice:
++                   tax_rule: TaxRule, invoice_address: InvoiceAddress, bundled_sum: Decimal,
++                   is_bundled=False) -> TaxedPrice:
+     if not tax_rule:
+         tax_rule = TaxRule(
+             name='',
+@@ -152,7 +155,8 @@ def get_line_price(price_after_voucher: Decimal, custom_price_input: Decimal, cu
+                                  override_tax_code=price.code, invoice_address=invoice_address,
+                                  subtract_from_gross=bundled_sum)
+         else:
+-            price = tax_rule.tax(max(custom_price_input, price.gross), base_price_is='gross', override_tax_rate=price.rate,
++            price = tax_rule.tax(max(custom_price_input, price.gross), base_price_is='gross',
++                                 override_tax_rate=price.rate,
+                                  override_tax_code=price.code, invoice_address=invoice_address,
+                                  subtract_from_gross=bundled_sum)
+     else:
+@@ -164,7 +168,7 @@ def get_line_price(price_after_voucher: Decimal, custom_price_input: Decimal, cu
+ 
+ def apply_discounts(event: Event, sales_channel: Union[str, SalesChannel],
+                     positions: List[Tuple[int, Optional[int], Optional[datetime], Decimal, bool, bool, Decimal]],
+-                    collect_potential_discounts: Optional[defaultdict]=None) -> List[Tuple[Decimal, Optional[Discount]]]:
++                    collect_potential_discounts: Optional[defaultdict] = None) -> List[Tuple[Decimal, Optional[Discount]]]:
+     """
+     Applies any dynamic discounts to a cart
+ 
+@@ -203,3 +207,121 @@ def apply_discounts(event: Event, sales_channel: Union[str, SalesChannel],
+         new_prices.update(result)
+ 
+     return [new_prices.get(idx, (p[3], None)) for idx, p in enumerate(positions)]
++
++
++def apply_rounding(rounding_mode: Literal["line", "sum_by_net", "sum_by_net_keep_gross"], currency: str,
++                   lines: List[Union[OrderPosition, CartPosition, OrderFee]]) -> list:
++    """
++    Given a list of order positions / cart positions / order fees (may be mixed), applies the given rounding mode
++    and mutates the ``price``, ``price_includes_rounding_correction``, ``tax_value``, and
++    ``tax_value_includes_rounding_correction`` attributes.
++
++    When rounding mode is set to ``"line"``, the tax will be computed and rounded individually for every line.
++
++    When rounding mode is set to ``"sum_by_net_keep_gross"``, the tax values of the individual lines will be adjusted
++    such that the per-taxrate/taxcode subtotal is rounded correctly. The gross prices will stay constant.
++
++    When rounding mode is set to ``"sum_by_net"``, the gross prices and tax values of the individual lines will be
++    adjusted such that the per-taxrate/taxcode subtotal is rounded correctly. The net prices will stay constant.
++
++    :param rounding_mode: One of ``"line"``, ``"sum_by_net"``, or ``"sum_by_net_keep_gross"``.
++    :param currency: Currency that will be used to determine rounding precision
++    :param lines: List of order/cart contents
++    :return: Collection of ``lines`` members that have been changed and may need to be persisted to the database.
++    """
++
++    def _key(line):
++        return (line.tax_rate, line.tax_code)
++
++    places = settings.CURRENCY_PLACES.get(currency, 2)
++    minimum_unit = Decimal('1') / 10 ** places
++    changed = []
++
++    if rounding_mode == "sum_by_net":
++        for (tax_rate, tax_code), lines in groupby(sorted(lines, key=_key), key=_key):
++            lines = list(sorted(lines, key=lambda l: -l.gross_price_before_rounding))
++
++            # Compute the net and gross total of the line-based computation method
++            net_total = sum(l.net_price_before_rounding for l in lines)
++            gross_total = sum(l.gross_price_before_rounding for l in lines)
++
++            # Compute the gross total we need to achieve based on the net total
++            target_gross_total = round_decimal((net_total * (1 + tax_rate / 100)), currency)
++
++            # Add/subtract the smallest possible from both gross prices and tax values (so net values stay the same)
++            # until the values align
++            diff = target_gross_total - gross_total
++            diff_sgn = -1 if diff < 0 else 1
++            for l in lines:
++                if diff:
++                    apply_diff = diff_sgn * minimum_unit
++                    l.price = l.gross_price_before_rounding + apply_diff
++                    l.price_includes_rounding_correction = apply_diff
++                    l.tax_value = l.tax_value_before_rounding + apply_diff
++                    l.tax_value_includes_rounding_correction = apply_diff
++                    diff -= apply_diff
++                    changed.append(l)
++                elif l.price_includes_rounding_correction or l.tax_value_includes_rounding_correction:
++                    l.price = l.gross_price_before_rounding
++                    l.price_includes_rounding_correction = Decimal("0.00")
++                    l.tax_value = l.tax_value_before_rounding
++                    l.tax_value_includes_rounding_correction = Decimal("0.00")
++                    changed.append(l)
++
++    elif rounding_mode == "sum_by_net_keep_gross":
++        for (tax_rate, tax_code), lines in groupby(sorted(lines, key=_key), key=_key):
++            lines = list(sorted(lines, key=lambda l: -l.gross_price_before_rounding))
++
++            # Compute the net and gross total of the line-based computation method
++            net_total = sum(l.net_price_before_rounding for l in lines)
++            gross_total = sum(l.gross_price_before_rounding for l in lines)
++
++            # Compute the net total that would yield the correct gross total (if possible)
++            target_net_total = round_decimal(gross_total - (gross_total * (1 - 100 / (100 + tax_rate))), currency)
++
++            # Compute the gross total that would be computed from that net total – this will be different than
++            # gross_total when there is no possible net value for the gross total
++            # e.g. 99.99 at 19% is impossible since 84.03 + 19% = 100.00 and 84.02 + 19% = 99.98
++            target_gross_total = round_decimal((target_net_total * (1 + tax_rate / 100)), currency)
++
++            diff_gross = target_gross_total - gross_total
++            diff_net = target_net_total - net_total
++            diff_gross_sgn = -1 if diff_gross < 0 else 1
++            diff_net_sgn = -1 if diff_net < 0 else 1
++            for l in lines:
++                if diff_gross:
++                    apply_diff = diff_gross_sgn * minimum_unit
++                    l.price = l.gross_price_before_rounding + apply_diff
++                    l.price_includes_rounding_correction = apply_diff
++                    l.tax_value = l.tax_value_before_rounding + apply_diff
++                    l.tax_value_includes_rounding_correction = apply_diff
++                    changed.append(l)
++                    diff_gross -= apply_diff
++                elif diff_net:
++                    apply_diff = diff_net_sgn * minimum_unit
++                    l.price = l.gross_price_before_rounding
++                    l.price_includes_rounding_correction = Decimal("0.00")
++                    l.tax_value = l.tax_value_before_rounding - apply_diff
++                    l.tax_value_includes_rounding_correction = -apply_diff
++                    changed.append(l)
++                    diff_net -= apply_diff
++                elif l.price_includes_rounding_correction or l.tax_value_includes_rounding_correction:
++                    l.price = l.gross_price_before_rounding
++                    l.price_includes_rounding_correction = Decimal("0.00")
++                    l.tax_value = l.tax_value_before_rounding
++                    l.tax_value_includes_rounding_correction = Decimal("0.00")
++                    changed.append(l)
++
++    elif rounding_mode == "line":
++        for l in lines:
++            if l.price_includes_rounding_correction or l.tax_value_includes_rounding_correction:
++                l.price = l.gross_price_before_rounding
++                l.price_includes_rounding_correction = Decimal("0.00")
++                l.tax_value = l.tax_value_before_rounding
++                l.tax_value_includes_rounding_correction = Decimal("0.00")
++                changed.append(l)
++
++    else:
++        raise ValueError("Unknown rounding_mode")
++
++    return changed
+diff --git a/src/pretix/base/settings.py b/src/pretix/base/settings.py
+index 3bf4ead9..60e510b2 100644
+--- a/src/pretix/base/settings.py
++++ b/src/pretix/base/settings.py
+@@ -77,6 +77,13 @@ from pretix.control.forms import (
+ )
+ from pretix.helpers.countries import CachedCountries
+ 
++ROUNDING_MODES = (
++    ('line', _('Compute taxes for every line individually')),
++    ('sum_by_net', _('Compute taxes based on net total')),
++    ('sum_by_net_keep_gross', _('Compute taxes based on net total with stable gross prices')),
++    # We could also have sum_by_gross, but we're not aware of any use-cases for it
++)
++
+ 
+ def country_choice_kwargs():
+     allcountries = list(CachedCountries())
+@@ -324,7 +331,7 @@ DEFAULTS = {
+         'form_class': forms.BooleanField,
+         'serializer_class': serializers.BooleanField,
+         'form_kwargs': dict(
+-            label=_("Show net prices instead of gross prices in the product list (not recommended!)"),
++            label=_("Show net prices instead of gross prices in the product list"),
+             help_text=_("Independent of your choice, the cart will show gross prices as this is the price that needs to be "
+                         "paid."),
+ 
+@@ -465,6 +472,25 @@ DEFAULTS = {
+             widget=forms.CheckboxInput(attrs={'data-checkbox-dependency': '#id_settings-order_phone_asked'}),
+         )
+     },
++    'tax_rounding': {
++        'default': 'line',
++        'type': str,
++        'form_class': forms.ChoiceField,
++        'serializer_class': serializers.ChoiceField,
++        'form_kwargs': dict(
++            label=_("Rounding of taxes"),
++            widget=forms.RadioSelect,
++            choices=ROUNDING_MODES,
++            help_text=_(
++                "Note that if you transfer your sales data from pretix to an external system for tax reporting, you "
++                "need to make sure to account for possible rounding differences if your external system rounds "
++                "differently than pretix."
++            )
++        ),
++        'serializer_kwargs': dict(
++            choices=ROUNDING_MODES,
++        ),
++    },
+     'invoice_address_asked': {
+         'default': 'True',
+         'type': bool,
+diff --git a/src/pretix/control/forms/event.py b/src/pretix/control/forms/event.py
+index 2c67d74b..f73d4bd4 100644
+--- a/src/pretix/control/forms/event.py
++++ b/src/pretix/control/forms/event.py
+@@ -68,7 +68,7 @@ from pretix.base.reldate import RelativeDateField, RelativeDateTimeField
+ from pretix.base.services.placeholders import FormPlaceholderMixin
+ from pretix.base.settings import (
+     COUNTRIES_WITH_STATE_IN_ADDRESS, DEFAULTS, PERSON_NAME_SCHEMES,
+-    PERSON_NAME_TITLE_GROUPS, validate_event_settings,
++    PERSON_NAME_TITLE_GROUPS, ROUNDING_MODES, validate_event_settings,
+ )
+ from pretix.base.validators import multimail_validate
+ from pretix.control.forms import (
+@@ -541,7 +541,6 @@ class EventSettingsForm(EventSettingsValidationMixin, FormPlaceholderMixin, Sett
+         'show_date_to',
+         'show_times',
+         'show_items_outside_presale_period',
+-        'display_net_prices',
+         'hide_prices_from_attendees',
+         'presale_start_show_date',
+         'locales',
+@@ -799,6 +798,80 @@ class PaymentSettingsForm(EventSettingsValidationMixin, SettingsForm):
+         return value
+ 
+ 
++class DisplayNetPricesBooleanSelect(forms.RadioSelect):
++    def __init__(self, attrs=None):
++        choices = (
++            ("false", format_html(
++                '{} <br><span class="text-muted">{}</span>',
++                _("Prices including tax"),
++                _("Recommended if you sell tickets at least partly to consumers.")
++            )),
++            ("true", format_html(
++                '{} <br><span class="text-muted">{}</span>',
++                _("Prices excluding tax"),
++                _("Recommended only if you sell tickets primarily to business customers.")
++            )),
++        )
++        super().__init__(attrs, choices)
++
++    def format_value(self, value):
++        try:
++            return {
++                True: "true",
++                False: "false",
++                "true": "true",
++                "false": "false",
++            }[value]
++        except KeyError:
++            return "unknown"
++
++    def value_from_datadict(self, data, files, name):
++        value = data.get(name)
++        return {
++            True: True,
++            "True": True,
++            "False": False,
++            False: False,
++            "true": True,
++            "false": False,
++        }.get(value)
++
++
++class TaxSettingsForm(EventSettingsValidationMixin, SettingsForm):
++    auto_fields = [
++        'display_net_prices',
++        'tax_rounding',
++    ]
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.fields["display_net_prices"].label = _("Prices shown to customer")
++        self.fields["display_net_prices"].widget = DisplayNetPricesBooleanSelect()
++        help_text = {
++            "line": _(
++                "Recommended when e-invoicing is not required. Each product will be sold with the advertised "
++                "net and gross price. However, in orders of more than one product, the total tax amount "
++                "can differ from when it would be computed from the order total."
++            ),
++            "sum_by_net": _(
++                "Recommended for e-invoicing when you primarily sell to business customers and "
++                "show prices to customers excluding tax. "
++                "The gross price of some products may be changed to ensure correct rounding, while the net "
++                "prices will be kept as configured. This may cause the actual payment amount to differ."
++            ),
++            "sum_by_net_keep_gross": _(
++                "Recommended for e-invoicing when you primarily sell to consumers. "
++                "The gross or net price of some products may be changed automatically to ensure correct "
++                "rounding of the order total. The system attempts to keep gross prices as configured whenever "
++                "possible. Gross prices may still change if they are impossible to derive from a rounded net price."
++            ),
++        }
++        self.fields["tax_rounding"].choices = (
++            (k, format_html('{}<br><span class="text-muted">{}</span>', v, help_text.get(k, "")))
++            for k, v in ROUNDING_MODES
++        )
++
++
+ class ProviderForm(SettingsForm):
+     """
+     This is a SettingsForm, but if fields are set to required=True, validation
+@@ -1527,7 +1600,10 @@ class TaxRuleLineForm(I18nForm):
+     rate = forms.DecimalField(
+         label=_('Deviating tax rate'),
+         max_digits=10, decimal_places=2,
+-        required=False
++        required=False,
++        widget=forms.NumberInput(attrs={
++            'placeholder': _('Deviating tax rate'),
++        })
+     )
+     invoice_text = I18nFormField(
+         label=_('Text on invoice'),
+diff --git a/src/pretix/control/navigation.py b/src/pretix/control/navigation.py
+index 99bdd865..c3a0cbb8 100644
+--- a/src/pretix/control/navigation.py
++++ b/src/pretix/control/navigation.py
+@@ -86,7 +86,7 @@ def get_event_navigation(request: HttpRequest):
+                 'active': url.url_name == 'event.settings.mail',
+             },
+             {
+-                'label': _('Tax rules'),
++                'label': _('Taxes'),
+                 'url': reverse('control:event.settings.tax', kwargs={
+                     'event': request.event.slug,
+                     'organizer': request.event.organizer.slug,
+diff --git a/src/pretix/control/templates/pretixcontrol/event/settings.html b/src/pretix/control/templates/pretixcontrol/event/settings.html
+index 3a90aef7..8d9a46f7 100644
+--- a/src/pretix/control/templates/pretixcontrol/event/settings.html
++++ b/src/pretix/control/templates/pretixcontrol/event/settings.html
+@@ -243,7 +243,6 @@
+                 {% bootstrap_field sform.show_times layout="control" %}
+                 <h4>{% trans "Product list" %}</h4>
+                 {% bootstrap_field sform.show_quota_left layout="control" %}
+-                {% bootstrap_field sform.display_net_prices layout="control" %}
+                 {% bootstrap_field sform.show_variations_expanded layout="control" %}
+                 {% bootstrap_field sform.hide_sold_out layout="control" %}
+ 
+diff --git a/src/pretix/control/templates/pretixcontrol/event/tax.html b/src/pretix/control/templates/pretixcontrol/event/tax.html
+new file mode 100644
+index 00000000..9a58c754
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/event/tax.html
+@@ -0,0 +1,120 @@
++{% extends "pretixcontrol/event/settings_base.html" %}
++{% load i18n %}
++{% load bootstrap3 %}
++{% block title %}{% trans "Taxes" %}{% endblock %}
++{% block inside %}
++    <h1>{% trans "Taxes" %}</h1>
++    {% bootstrap_form_errors form layout="control" %}
++    <fieldset>
++        <legend>{% trans "Tax rules" %}</legend>
++        <p>
++            {% blocktrans trimmed %}
++                Tax rules define different taxation scenarios that can then be assigned to the individual products.
++                Each tax rule contains a default tax rate and can optionally contain additional rules that depend
++                on the customer's country and type.
++            {% endblocktrans %}
++        </p>
++
++        {% if taxrules|length == 0 %}
++            <div class="empty-collection">
++                <p>
++                    {% blocktrans trimmed %}
++                        You haven't created any tax rules yet.
++                    {% endblocktrans %}
++                </p>
++
++                <a href="{% url "control:event.settings.tax.add" organizer=request.event.organizer.slug event=request.event.slug %}"
++                   class="btn btn-primary btn-lg"><i class="fa fa-plus"></i> {% trans "Create a new tax rule" %}</a>
++            </div>
++        {% else %}
++            <div class="table-responsive">
++                <table class="table table-hover table-quotas">
++                    <thead>
++                    <tr>
++                        <th>{% trans "Name" %}</th>
++                        <th>{% trans "Default" %}</th>
++                        <th>{% trans "Usage" %}</th>
++                        <th>{% trans "Rate" %}</th>
++                        <th class="action-col-2"></th>
++                    </tr>
++                    </thead>
++                    <tbody>
++                    {% for tr in taxrules %}
++                        <tr>
++                            <td>
++                                <strong><a
++                                        href="{% url "control:event.settings.tax.edit" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}">
++                                    {{ tr.internal_name|default:tr.name }}
++                                </a></strong>
++                            </td>
++                            <td>
++                                {% if tr.default %}
++                                    <span class="text-success">
++                                    <span class="fa fa-check"></span>
++                                    {% trans "Default" %}
++                                </span>
++                                {% else %}
++                                    <form class="form-inline" method="post"
++                                          action="{% url "control:event.settings.tax.default" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}">
++                                        {% csrf_token %}
++                                        <button class="btn btn-default btn-sm">
++                                            {% trans "Make default" %}
++                                        </button>
++                                    </form>
++                                {% endif %}
++                            </td>
++                            <td>
++                                {% blocktrans trimmed count count=tr.c_items %}
++                                    {{ count }} product
++                                {% plural %}
++                                    {{ count }} products
++                                {% endblocktrans %}
++                            </td>
++                            <td>
++                                {% if tr.price_includes_tax %}
++                                    {% blocktrans with rate=tr.rate %}incl. {{ rate }} %{% endblocktrans %}
++                                {% else %}
++                                    {% blocktrans with rate=tr.rate %}excl. {{ rate }} %{% endblocktrans %}
++                                {% endif %}
++                                {% if tr.has_custom_rules %}
++                                    <br><small>{% trans "with custom rules" %}</small>
++                                {% elif tr.eu_reverse_charge %}
++                                    <br><small>{% trans "reverse charge enabled" %}</small>
++                                {% endif %}
++                            </td>
++                            <td class="text-right flip">
++                                <a href="{% url "control:event.settings.tax.edit" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}"
++                                   class="btn btn-default btn-sm"><i class="fa fa-edit"></i></a>
++                                <a href="{% url "control:event.settings.tax.delete" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}"
++                                   class="btn btn-danger btn-sm"><i class="fa fa-trash"></i></a>
++                            </td>
++                        </tr>
++                    {% endfor %}
++                    </tbody>
++                    <tfoot>
++                    <tr>
++                        <td colspan="5">
++                            <a href="{% url "control:event.settings.tax.add" organizer=request.event.organizer.slug event=request.event.slug %}"
++                               class="btn btn-default"><i class="fa fa-plus"></i> {% trans "Create a new tax rule" %}
++                            </a>
++                        </td>
++                    </tr>
++                    </tfoot>
++                </table>
++            </div>
++        {% endif %}
++    </fieldset>
++    <form action="" method="post" class="form-horizontal">
++        {% csrf_token %}
++        <fieldset>
++            <legend>{% trans "Tax settings" %}</legend>
++            {% bootstrap_field form.tax_rounding layout="control" %}
++            {% bootstrap_field form.display_net_prices layout="control" %}
++        </fieldset>
++        <div class="form-group submit-group">
++            <button type="submit" class="btn btn-primary btn-save">
++                {% trans "Save" %}
++            </button>
++        </div>
++    </form>
++{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/event/tax_index.html b/src/pretix/control/templates/pretixcontrol/event/tax_index.html
+deleted file mode 100644
+index 19123adb..00000000
+--- a/src/pretix/control/templates/pretixcontrol/event/tax_index.html
++++ /dev/null
+@@ -1,77 +0,0 @@
+-{% extends "pretixcontrol/event/settings_base.html" %}
+-{% load i18n %}
+-{% block title %}{% trans "Tax rules" %}{% endblock %}
+-{% block inside %}
+-    <h1>{% trans "Tax rules" %}</h1>
+-    {% if taxrules|length == 0 %}
+-        <div class="empty-collection">
+-            <p>
+-                {% blocktrans trimmed %}
+-                    You haven't created any tax rules yet.
+-                {% endblocktrans %}
+-            </p>
+-
+-            <a href="{% url "control:event.settings.tax.add" organizer=request.event.organizer.slug event=request.event.slug %}"
+-                    class="btn btn-primary btn-lg"><i class="fa fa-plus"></i> {% trans "Create a new tax rule" %}</a>
+-        </div>
+-    {% else %}
+-        <p>
+-            <a href="{% url "control:event.settings.tax.add" organizer=request.event.organizer.slug event=request.event.slug %}" class="btn btn-default"><i class="fa fa-plus"></i> {% trans "Create a new tax rule" %}
+-            </a>
+-        </p>
+-        <div class="table-responsive">
+-            <table class="table table-hover table-quotas">
+-                <thead>
+-                <tr>
+-                    <th>{% trans "Name" %}</th>
+-                    <th>{% trans "Default" %}</th>
+-                    <th>{% trans "Rate" %}</th>
+-                    <th class="action-col-2"></th>
+-                </tr>
+-                </thead>
+-                <tbody>
+-                {% for tr in taxrules %}
+-                    <tr>
+-                        <td>
+-                            <strong><a href="{% url "control:event.settings.tax.edit" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}">
+-                                {{ tr.internal_name|default:tr.name }}
+-                            </a></strong>
+-                        </td>
+-                        <td>
+-                            {% if tr.default %}
+-                                <span class="text-success">
+-                                    <span class="fa fa-check"></span>
+-                                    {% trans "Default" %}
+-                                </span>
+-                            {% else %}
+-                                <form class="form-inline" method="post"
+-                                      action="{% url "control:event.settings.tax.default" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}">
+-                                    {% csrf_token %}
+-                                    <button class="btn btn-default btn-sm">
+-                                        {% trans "Make default" %}
+-                                    </button>
+-                                </form>
+-                            {% endif %}
+-                        </td>
+-                        <td>
+-                            {% if tr.price_includes_tax %}
+-                                {% blocktrans with rate=tr.rate%}incl. {{ rate }} %{% endblocktrans %}
+-                            {% else %}
+-                                {% blocktrans with rate=tr.rate%}excl. {{ rate }} %{% endblocktrans %}
+-                            {% endif %}
+-                            {% if tr.eu_reverse_charge %}
+-                                ({% trans "reverse charge enabled" %})
+-                            {% endif %}
+-                        </td>
+-                        <td class="text-right flip">
+-                            <a href="{% url "control:event.settings.tax.edit" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}" class="btn btn-default btn-sm"><i class="fa fa-edit"></i></a>
+-                            <a href="{% url "control:event.settings.tax.delete" organizer=request.event.organizer.slug event=request.event.slug rule=tr.id %}" class="btn btn-danger btn-sm"><i class="fa fa-trash"></i></a>
+-                        </td>
+-                    </tr>
+-                {% endfor %}
+-                </tbody>
+-            </table>
+-        </div>
+-    {% endif %}
+-    {% include "pretixcontrol/pagination.html" %}
+-{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/order/index.html b/src/pretix/control/templates/pretixcontrol/order/index.html
+index 889dc6fd..952be0d5 100644
+--- a/src/pretix/control/templates/pretixcontrol/order/index.html
++++ b/src/pretix/control/templates/pretixcontrol/order/index.html
+@@ -681,6 +681,16 @@
+                                         </small>
+                                     {% endif %}
+                                 {% endif %}
++                                {% if django_settings.DEBUG %}
++                                    <br/>
++                                    <small class="admin-only">
++                                        price = {{ line.price|floatformat:2 }}<br>
++                                        rounding_correction = {{ line.price_includes_rounding_correction|floatformat:2 }}<br>
++                                        tax_value = {{ line.tax_value|floatformat:2 }}<br>
++                                        tax_value_rounding_correction = {{ line.tax_value_includes_rounding_correction|floatformat:2 }}<br>
++                                        voucher_budget_use = {{ line.voucher_budget_use|floatformat:2 }}
++                                    </small>
++                                {% endif %}
+                             </div>
+                             <div class="clearfix"></div>
+                         </div>
+@@ -721,6 +731,16 @@
+                                         </small>
+                                     {% endif %}
+                                 {% endif %}
++                                {% if django_settings.DEBUG %}
++                                    <br/>
++                                    <small class="admin-only">
++                                        price = {{ fee.value|floatformat:2 }}<br>
++                                        rounding_correction = {{ fee.value_includes_rounding_correction|floatformat:2 }}<br>
++                                        tax_value = {{ fee.tax_value|floatformat:2 }}<br>
++                                        tax_value_rounding_correction = {{ fee.tax_value_includes_rounding_correction|floatformat:2 }}<br>
++                                        voucher_budget_use = {{ fee.voucher_budget_use|floatformat:2 }}
++                                    </small>
++                                {% endif %}
+                             </div>
+                             <div class="clearfix"></div>
+                         </div>
+@@ -749,6 +769,10 @@
+                         </div>
+                         <div class="col-md-3 col-xs-6 col-md-offset-5 price">
+                             <strong>{{ items.total|money:event.currency }}</strong>
++                            <br/>
++                            <small class="admin-only">
++                                tax_rounding_mode = {{ order.tax_rounding_mode }}
++                            </small>
+                         </div>
+                         <div class="clearfix"></div>
+                     </div>
+diff --git a/src/pretix/control/templates/pretixcontrol/order/transactions.html b/src/pretix/control/templates/pretixcontrol/order/transactions.html
+index 7d327de1..90431ec7 100644
+--- a/src/pretix/control/templates/pretixcontrol/order/transactions.html
++++ b/src/pretix/control/templates/pretixcontrol/order/transactions.html
+@@ -56,8 +56,26 @@
+                 <td>{{ t.get_tax_code_display }}</td>
+                 <td class="text-right flip">{{ t.count }} &times;</td>
+                 <td class="text-right flip">{{ t.price|money:request.event.currency }}</td>
+-                <td class="text-right flip">{{ t.full_tax_value|money:request.event.currency }}</td>
+-                <td class="text-right flip">{{ t.full_price|money:request.event.currency }}</td>
++                <td class="text-right flip">
++                    {{ t.full_tax_value|money:request.event.currency }}
++                    {% if t.full_price_includes_rounding_correction %}
++                        <br><small>
++                            {% blocktrans trimmed with amount=t.full_tax_value_includes_rounding_correction|money:request.event.currency %}
++                                incl. {{ amount }} rounding correction
++                            {% endblocktrans %}
++                        </small>
++                    {% endif %}
++                </td>
++                <td class="text-right flip">
++                    {{ t.full_price|money:request.event.currency }}
++                    {% if t.full_price_includes_rounding_correction %}
++                        <br><small>
++                        {% blocktrans trimmed with amount=t.full_price_includes_rounding_correction|money:request.event.currency %}
++                            incl. {{ amount }} rounding correction
++                        {% endblocktrans %}
++                    </small>
++                    {% endif %}
++                </td>
+             </tr>
+         {% endfor %}
+         </tbody>
+diff --git a/src/pretix/control/urls.py b/src/pretix/control/urls.py
+index feb3b640..04296c37 100644
+--- a/src/pretix/control/urls.py
++++ b/src/pretix/control/urls.py
+@@ -290,7 +290,7 @@ urlpatterns = [
+         re_path(r'^settings/invoice$', event.InvoiceSettings.as_view(), name='event.settings.invoice'),
+         re_path(r'^settings/invoice/preview$', event.InvoicePreview.as_view(), name='event.settings.invoice.preview'),
+         re_path(r'^settings/display', event.DisplaySettings.as_view(), name='event.settings.display'),
+-        re_path(r'^settings/tax/$', event.TaxList.as_view(), name='event.settings.tax'),
++        re_path(r'^settings/tax/$', event.TaxSettings.as_view(), name='event.settings.tax'),
+         re_path(r'^settings/tax/(?P<rule>\d+)/$', event.TaxUpdate.as_view(), name='event.settings.tax.edit'),
+         re_path(r'^settings/tax/add$', event.TaxCreate.as_view(), name='event.settings.tax.add'),
+         re_path(r'^settings/tax/(?P<rule>\d+)/delete$', event.TaxDelete.as_view(), name='event.settings.tax.delete'),
+diff --git a/src/pretix/control/views/event.py b/src/pretix/control/views/event.py
+index c72e81bb..3a521eb5 100644
+--- a/src/pretix/control/views/event.py
++++ b/src/pretix/control/views/event.py
+@@ -54,7 +54,7 @@ from django.contrib.contenttypes.models import ContentType
+ from django.core.exceptions import PermissionDenied
+ from django.core.files import File
+ from django.db import transaction
+-from django.db.models import ProtectedError
++from django.db.models import Count, ProtectedError
+ from django.forms import inlineformset_factory
+ from django.http import (
+     Http404, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed,
+@@ -90,7 +90,7 @@ from pretix.control.forms.event import (
+     EventFooterLinkFormset, EventMetaValueForm, EventSettingsForm,
+     EventUpdateForm, InvoiceSettingsForm, ItemMetaPropertyForm,
+     MailSettingsForm, PaymentSettingsForm, ProviderForm, QuickSetupForm,
+-    QuickSetupProductFormSet, TaxRuleForm, TaxRuleLineFormSet,
++    QuickSetupProductFormSet, TaxRuleForm, TaxRuleLineFormSet, TaxSettingsForm,
+     TicketSettingsForm, WidgetCodeForm,
+ )
+ from pretix.control.permissions import EventPermissionRequiredMixin
+@@ -648,6 +648,25 @@ class PaymentSettings(EventSettingsViewMixin, EventSettingsFormView):
+         return context
+ 
+ 
++class TaxSettings(EventSettingsViewMixin, EventSettingsFormView):
++    template_name = 'pretixcontrol/event/tax.html'
++    form_class = TaxSettingsForm
++    permission = 'can_change_event_settings'
++
++    def get_success_url(self) -> str:
++        return reverse('control:event.settings.tax', kwargs={
++            'organizer': self.request.organizer.slug,
++            'event': self.request.event.slug,
++        })
++
++    def get_context_data(self, *args, **kwargs) -> dict:
++        context = super().get_context_data(*args, **kwargs)
++        context['taxrules'] = self.request.event.tax_rules.annotate(
++            c_items=Count("item")
++        ).all()
++        return context
++
++
+ class InvoiceSettings(EventSettingsViewMixin, EventSettingsFormView):
+     model = Event
+     form_class = InvoiceSettingsForm
+@@ -1263,16 +1282,6 @@ class EventComment(EventPermissionRequiredMixin, View):
+         })
+ 
+ 
+-class TaxList(EventSettingsViewMixin, EventPermissionRequiredMixin, PaginationMixin, ListView):
+-    model = TaxRule
+-    context_object_name = 'taxrules'
+-    template_name = 'pretixcontrol/event/tax_index.html'
+-    permission = 'can_change_event_settings'
+-
+-    def get_queryset(self):
+-        return self.request.event.tax_rules.all()
+-
+-
+ class TaxCreate(EventSettingsViewMixin, EventPermissionRequiredMixin, CreateView):
+     model = TaxRule
+     form_class = TaxRuleForm
+diff --git a/src/pretix/control/views/orders.py b/src/pretix/control/views/orders.py
+index aec42dea..1cb9edf6 100644
+--- a/src/pretix/control/views/orders.py
++++ b/src/pretix/control/views/orders.py
+@@ -633,7 +633,9 @@ class OrderTransactions(OrderView):
+         ctx['sums'] = self.order.transactions.aggregate(
+             sum_count=Sum('count'),
+             full_price=Sum(F('count') * F('price')),
++            full_price_includes_rounding_correction=Sum(F('count') * F('price_includes_rounding_correction')),
+             full_tax_value=Sum(F('count') * F('tax_value')),
++            full_tax_value_includes_rounding_correction=Sum(F('count') * F('tax_value_includes_rounding_correction')),
+         )
+         return ctx
+ 
+diff --git a/src/pretix/plugins/paypal2/views.py b/src/pretix/plugins/paypal2/views.py
+index 89cf81ea..336239a1 100644
+--- a/src/pretix/plugins/paypal2/views.py
++++ b/src/pretix/plugins/paypal2/views.py
+@@ -73,7 +73,7 @@ from pretix.plugins.paypal2.payment import (
+     PaypalMethod, PaypalMethod as Paypal, PaypalWallet,
+ )
+ from pretix.plugins.paypal.models import ReferencedPayPalObject
+-from pretix.presale.views import get_cart, get_cart_total
++from pretix.presale.views import get_cart
+ from pretix.presale.views.cart import cart_session
+ 
+ logger = logging.getLogger('pretix.plugins.paypal2')
+@@ -147,7 +147,7 @@ class XHRView(View):
+ 
+             cart_total = order.pending_sum + fee
+         else:
+-            cart_total = get_cart_total(request)
++            cart = get_cart(request)
+             cart_payments = cart_session(request).get('payments', [])
+             multi_use_cart_payments = [p for p in cart_payments if p.get('multi_use_supported')]
+             simulated_payments = multi_use_cart_payments + [{
+@@ -159,12 +159,13 @@ class XHRView(View):
+             }]
+ 
+             try:
+-                for fee in get_fees(request.event, request, cart_total, None, simulated_payments, get_cart(request)):
+-                    cart_total += fee.value
++                fees = get_fees(event=request.event, request=request, invoice_address=None,
++                                payments=simulated_payments, positions=cart)
+             except TaxRule.SaleNotAllowed:
+                 # ignore for now, will fail on order creation
+-                pass
++                fees = []
+ 
++            cart_total = sum([c.price for c in cart]) + sum([f.value for f in fees])
+             total_remaining = cart_total
+             for p in multi_use_cart_payments:
+                 if p.get('min_value') and total_remaining < Decimal(p['min_value']):
+diff --git a/src/pretix/presale/checkoutflow.py b/src/pretix/presale/checkoutflow.py
+index 31a130b0..0629af00 100644
+--- a/src/pretix/presale/checkoutflow.py
++++ b/src/pretix/presale/checkoutflow.py
+@@ -91,9 +91,7 @@ from pretix.presale.signals import (
+     question_form_fields_overrides,
+ )
+ from pretix.presale.utils import customer_login
+-from pretix.presale.views import (
+-    CartMixin, get_cart, get_cart_is_free, get_cart_total,
+-)
++from pretix.presale.views import CartMixin, get_cart, get_cart_is_free
+ from pretix.presale.views.cart import (
+     _items_from_post_data, cart_session, create_empty_cart_id,
+     get_or_create_cart_id,
+@@ -1262,18 +1260,16 @@ class PaymentStep(CartMixin, TemplateFlowStep):
+     @cached_property
+     def _total_order_value(self):
+         cart = get_cart(self.request)
+-        total = get_cart_total(self.request)
+         try:
+-            total += sum([
+-                f.value for f in get_fees(
+-                    self.request.event, self.request, total, self.invoice_address,
+-                    [p for p in self.cart_session.get('payments', []) if p.get('multi_use_supported')],
+-                    cart,
+-                )
+-            ])
++            fees = get_fees(
++                event=self.request.event, request=self.request, invoice_address=self.invoice_address,
++                payments=[p for p in self.cart_session.get('payments', []) if p.get('multi_use_supported')],
++                positions=cart,
++            )
+         except TaxRule.SaleNotAllowed:
+             # ignore for now, will fail on order creation
+-            pass
++            fees = []
++        total = sum([c.price for c in cart]) + sum([f.value for f in fees])
+         return Decimal(total)
+ 
+     @cached_property
+@@ -1399,7 +1395,13 @@ class PaymentStep(CartMixin, TemplateFlowStep):
+ 
+     def get_context_data(self, **kwargs):
+         ctx = super().get_context_data(**kwargs)
+-        ctx['current_payments'] = [p for p in self.current_selected_payments(self._total_order_value) if p.get('multi_use_supported')]
++        ctx['cart'] = self.get_cart()
++        ctx['current_payments'] = [
++            p for p in self.current_selected_payments(
++                ctx['cart']['raw'], ctx['cart']['fees'], ctx['cart']['invoice_address'],
++            )
++            if p.get('multi_use_supported')
++        ]
+         ctx['remaining'] = self._total_order_value - sum(p['payment_amount'] for p in ctx['current_payments']) + sum(p['fee'] for p in ctx['current_payments'])
+         ctx['providers'] = self.provider_forms
+         ctx['show_fees'] = any(p['fee'] for p in self.provider_forms)
+@@ -1412,7 +1414,6 @@ class PaymentStep(CartMixin, TemplateFlowStep):
+             ctx['selected'] = self.single_use_payment['provider']
+         else:
+             ctx['selected'] = ''
+-        ctx['cart'] = self.get_cart()
+         return ctx
+ 
+     def _is_allowed(self, prov, request):
+@@ -1425,14 +1426,20 @@ class PaymentStep(CartMixin, TemplateFlowStep):
+             return False
+ 
+         cart = get_cart(self.request)
+-        total = get_cart_total(self.request)
+         try:
+-            total += sum([f.value for f in get_fees(self.request.event, self.request, total, self.invoice_address,
+-                                                    self.cart_session.get('payments', []), cart)])
++            fees = get_fees(
++                event=self.request.event,
++                request=self.request,
++                invoice_address=self.invoice_address,
++                payments=self.cart_session.get('payments', []),
++                positions=cart
++            )
+         except TaxRule.SaleNotAllowed:
+             # ignore for now, will fail on order creation
+-            pass
+-        selected = self.current_selected_payments(total, warn=warn, total_includes_payment_fees=True)
++            fees = []
++        total = sum([c.price for c in cart]) + sum([f.value for f in fees])
++
++        selected = self.current_selected_payments(cart, fees, self.invoice_address, warn=warn)
+         if sum(p['payment_amount'] for p in selected) != total:
+             if warn:
+                 messages.error(request, _('Please select a payment method to proceed.'))
+@@ -1516,7 +1523,11 @@ class ConfirmStep(CartMixin, AsyncAction, TemplateFlowStep):
+         ctx = super().get_context_data(**kwargs)
+         ctx['cart'] = self.get_cart(answers=True)
+ 
+-        selected_payments = self.current_selected_payments(ctx['cart']['total'], total_includes_payment_fees=True)
++        selected_payments = self.current_selected_payments(
++            ctx['cart']['raw'],
++            ctx['cart']['fees'],
++            ctx['cart']['invoice_address'],
++        )
+         ctx['payments'] = []
+         for p in selected_payments:
+             if p['provider'] == 'free':
+diff --git a/src/pretix/presale/views/__init__.py b/src/pretix/presale/views/__init__.py
+index 3ed42cad..f450e414 100644
+--- a/src/pretix/presale/views/__init__.py
++++ b/src/pretix/presale/views/__init__.py
+@@ -32,6 +32,7 @@
+ # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ # License for the specific language governing permissions and limitations under the License.
+ import copy
++import warnings
+ from collections import defaultdict
+ from datetime import datetime, timedelta
+ from decimal import Decimal
+@@ -50,10 +51,11 @@ from django_scopes import scopes_disabled
+ from pretix.base.i18n import get_language_without_region
+ from pretix.base.middleware import get_supported_language
+ from pretix.base.models import (
+-    CartPosition, Customer, InvoiceAddress, ItemAddOn, Question,
++    CartPosition, Customer, InvoiceAddress, ItemAddOn, OrderFee, Question,
+     QuestionAnswer, QuestionOption, TaxRule,
+ )
+ from pretix.base.services.cart import get_fees
++from pretix.base.services.pricing import apply_rounding
+ from pretix.base.templatetags.money import money_filter
+ from pretix.helpers.cookies import set_cookie_without_samesite
+ from pretix.multidomain.urlreverse import eventreverse
+@@ -147,6 +149,30 @@ class CartMixin:
+                             'question': value.label
+                         })
+ 
++        if order:
++            fees = order.fees.all()
++        elif lcp:
++            try:
++                fees = get_fees(
++                    event=self.request.event,
++                    request=self.request,
++                    invoice_address=self.invoice_address,
++                    payments=payments if payments is not None else self.cart_session.get('payments', []),
++                    positions=cartpos,
++                )
++            except TaxRule.SaleNotAllowed:
++                # ignore for now, will fail on order creation
++                fees = []
++        else:
++            fees = []
++
++        if not order:
++            apply_rounding(self.request.event.settings.tax_rounding, self.request.event.currency, [*lcp, *fees])
++
++        total = sum([c.price for c in lcp]) + sum([f.value for f in fees])
++        net_total = sum(p.price - p.tax_value for p in lcp) + sum([f.net_value for f in fees])
++        tax_total = sum(p.tax_value for p in lcp) + sum([f.tax_value for f in fees])
++
+         # Group items of the same variation
+         # We do this by list manipulations instead of a GROUP BY query, as
+         # Django is unable to join related models in a .values() query
+@@ -177,7 +203,7 @@ class CartMixin:
+                     pos.subevent_id,
+                     pos.item_id,
+                     pos.variation_id,
+-                    pos.price,
++                    pos.net_price if self.request.event.settings.display_net_prices else pos.price,
+                     (pos.voucher_id or 0),
+                     (pos.seat_id or 0),
+                     pos.valid_from,
+@@ -204,29 +230,6 @@ class CartMixin:
+                 group.additional_answers = pos_additional_fields.get(group.pk)
+             positions.append(group)
+ 
+-        total = sum(p.total for p in positions)
+-        net_total = sum(p.net_total for p in positions)
+-        tax_total = sum(p.total - p.net_total for p in positions)
+-
+-        if order:
+-            fees = order.fees.all()
+-        elif positions:
+-            try:
+-                fees = get_fees(
+-                    self.request.event, self.request, total, self.invoice_address,
+-                    payments if payments is not None else self.cart_session.get('payments', []),
+-                    cartpos
+-                )
+-            except TaxRule.SaleNotAllowed:
+-                # ignore for now, will fail on order creation
+-                fees = []
+-        else:
+-            fees = []
+-
+-        total += sum([f.value for f in fees])
+-        net_total += sum([f.net_value for f in fees])
+-        tax_total += sum([f.tax_value for f in fees])
+-
+         try:
+             first_expiry = min(p.expires for p in positions) if positions else now()
+             max_expiry_extend = min((p.max_extend for p in positions if p.max_extend), default=None)
+@@ -255,20 +258,28 @@ class CartMixin:
+             'max_expiry_extend': max_expiry_extend,
+             'is_ordered': bool(order),
+             'itemcount': sum(c.count for c in positions if not c.addon_to),
+-            'current_selected_payments': [p for p in self.current_selected_payments(total) if p.get('multi_use_supported')]
++            'current_selected_payments': [
++                p for p in self.current_selected_payments(positions, fees, self.invoice_address)
++                if p.get('multi_use_supported')
++            ]
+         }
+ 
+-    def current_selected_payments(self, total, warn=False, total_includes_payment_fees=False):
++    def current_selected_payments(self, positions, fees, invoice_address, *, warn=False):
+         raw_payments = copy.deepcopy(self.cart_session.get('payments', []))
++        fees = [f for f in fees if f.fee_type != OrderFee.FEE_TYPE_PAYMENT]  # we re-compute these here
++
++        apply_rounding(self.request.event.settings.tax_rounding, self.request.event.currency, [*positions, *fees])
++        total = sum([c.price for c in positions]) + sum([f.value for f in fees])
++
+         payments = []
+-        total_remaining = total
++        payments_assigned = Decimal("0.00")
+         for p in raw_payments:
+             # This algorithm of treating min/max values and fees needs to stay in sync between the following
+             # places in the code base:
+             # - pretix.base.services.cart.get_fees
+             # - pretix.base.services.orders._get_fees
+             # - pretix.presale.views.CartMixin.current_selected_payments
+-            if p.get('min_value') and total_remaining < Decimal(p['min_value']):
++            if p.get('min_value') and total - payments_assigned < Decimal(p['min_value']):
+                 if warn:
+                     messages.warning(
+                         self.request,
+@@ -279,7 +290,7 @@ class CartMixin:
+                 self._remove_payment(p['id'])
+                 continue
+ 
+-            to_pay = total_remaining
++            to_pay = max(total - payments_assigned, Decimal("0.00"))
+             if p.get('max_value') and to_pay > Decimal(p['max_value']):
+                 to_pay = min(to_pay, Decimal(p['max_value']))
+ 
+@@ -288,12 +299,36 @@ class CartMixin:
+                 self._remove_payment(p['id'])
+                 continue
+ 
+-            if not total_includes_payment_fees:
+-                fee = pprov.calculate_fee(to_pay)
+-                total_remaining += fee
+-                to_pay += fee
+-            else:
+-                fee = Decimal('0.00')
++            payment_fee = pprov.calculate_fee(to_pay)
++            if payment_fee:
++                if self.request.event.settings.tax_rule_payment == "default":
++                    payment_fee_tax_rule = self.request.event.cached_default_tax_rule or TaxRule.zero()
++                else:
++                    payment_fee_tax_rule = TaxRule.zero()
++                try:
++                    payment_fee_tax = payment_fee_tax_rule.tax(payment_fee, base_price_is='gross', invoice_address=invoice_address)
++                except TaxRule.SaleNotAllowed:
++                    # Replicate behavior from elsewhere, will fail later at the order stage
++                    payment_fee = Decimal("0.00")
++                    payment_fee_tax = TaxRule.zero().tax(payment_fee)
++                pf = OrderFee(
++                    fee_type=OrderFee.FEE_TYPE_PAYMENT,
++                    value=payment_fee,
++                    tax_rate=payment_fee_tax.rate,
++                    tax_value=payment_fee_tax.tax,
++                    tax_code=payment_fee_tax.code,
++                    tax_rule=payment_fee_tax_rule
++                )
++                fees.append(pf)
++
++                # Re-apply rounding as grand total has changed
++                apply_rounding(self.request.event.settings.tax_rounding, self.request.event.currency, [*positions, *fees])
++                total = sum([c.price for c in positions]) + sum([f.value for f in fees])
++
++                # Re-calculate to_pay as grand total has changed
++                to_pay = max(total - payments_assigned, Decimal("0.00"))
++                if p.get('max_value') and to_pay > Decimal(p['max_value']):
++                    to_pay = min(to_pay, Decimal(p['max_value']))
+ 
+             if p.get('max_value') and to_pay > Decimal(p['max_value']):
+                 to_pay = min(to_pay, Decimal(p['max_value']))
+@@ -301,8 +336,8 @@ class CartMixin:
+             p['payment_amount'] = to_pay
+             p['provider_name'] = pprov.public_name
+             p['pprov'] = pprov
+-            p['fee'] = fee
+-            total_remaining -= to_pay
++            p['fee'] = payment_fee
++            payments_assigned += to_pay
+             payments.append(p)
+         return payments
+ 
+@@ -373,6 +408,21 @@ def get_cart(request):
+ 
+ 
+ def get_cart_total(request):
++    """
++    Use the following pattern instead::
++
++        cart = get_cart(request)
++        fees = get_fees(
++            event=request.event,
++            request=request,
++            invoice_address=cached_invoice_address(request),
++            payments=None,
++            positions=cart,
++        )
++        total = sum([c.price for c in cart]) + sum([f.value for f in fees])
++    """
++    warnings.warn('get_cart_total is deprecated and will be removed in a future release',
++                  DeprecationWarning)
+     from pretix.presale.views.cart import get_or_create_cart_id
+ 
+     if not hasattr(request, '_cart_total_cache'):
+@@ -409,13 +459,14 @@ def get_cart_is_free(request):
+         cs = cart_session(request)
+         pos = get_cart(request)
+         ia = get_cart_invoice_address(request)
+-        total = get_cart_total(request)
+         try:
+-            fees = get_fees(request.event, request, total, ia, cs.get('payments', []), pos)
++            fees = get_fees(event=request.event, request=request, invoice_address=ia,
++                            payments=cs.get('payments', []), positions=pos)
+         except TaxRule.SaleNotAllowed:
+             # ignore for now, will fail on order creation
+             fees = []
+-        request._cart_free_cache = total + sum(f.value for f in fees) == Decimal('0.00')
++
++        request._cart_free_cache = sum(p.price for p in pos) + sum(f.value for f in fees) == Decimal('0.00')
+     return request._cart_free_cache
+ 
+ 
+diff --git a/src/pretix/presale/views/order.py b/src/pretix/presale/views/order.py
+index 291e4a12..dc8182dd 100644
+--- a/src/pretix/presale/views/order.py
++++ b/src/pretix/presale/views/order.py
+@@ -1552,6 +1552,7 @@ class OrderChangeMixin:
+ 
+     def post(self, request, *args, **kwargs):
+         was_paid = self.order.status == Order.STATUS_PAID
++        original_total = self.order.total
+         ocm = OrderChangeManager(
+             self.order,
+             notify=True,
+@@ -1603,7 +1604,8 @@ class OrderChangeMixin:
+                 except OrderError as e:
+                     messages.error(self.request, str(e))
+                 else:
+-                    if self.order.pending_sum < Decimal('0.00') and ocm._totaldiff < Decimal('0.00'):
++                    totaldiff = self.order.total - original_total
++                    if self.order.pending_sum < Decimal('0.00') and totaldiff < Decimal('0.00'):
+                         auto_refund = (
+                             not self.request.event.settings.cancel_allow_user_paid_require_approval
+                             and self.request.event.settings.cancel_allow_user_paid_refund_as_giftcard != "manually"
+@@ -1631,7 +1633,7 @@ class OrderChangeMixin:
+                 messages.info(self.request, _('You did not make any changes.'))
+                 return redirect(self.get_self_url())
+             else:
+-                new_pending_sum = self.order.pending_sum + ocm._totaldiff
++                new_pending_sum = self.order.pending_sum + ocm.guess_totaldiff()
+                 can_auto_refund = False
+                 if new_pending_sum < Decimal('0.00'):
+                     proposals = self.order.propose_auto_refunds(Decimal('-1.00') * new_pending_sum)
+@@ -1639,7 +1641,7 @@ class OrderChangeMixin:
+ 
+                 return render(request, self.confirm_template_name, {
+                     'operations': ocm._operations,
+-                    'totaldiff': ocm._totaldiff,
++                    'totaldiff': ocm.guess_totaldiff(),
+                     'order': self.order,
+                     'payment_refund_sum': self.order.payment_refund_sum,
+                     'new_pending_sum': new_pending_sum,
+@@ -1651,16 +1653,17 @@ class OrderChangeMixin:
+ 
+     def _validate_total_diff(self, ocm):
+         pr = self.get_price_requirement()
+-        if ocm._totaldiff < Decimal('0.00') and pr == 'gte':
++        totaldiff = ocm.guess_totaldiff()
++        if totaldiff < Decimal('0.00') and pr == 'gte':
+             raise OrderError(_('You may not change your order in a way that reduces the total price.'))
+-        if ocm._totaldiff <= Decimal('0.00') and pr == 'gt':
++        if totaldiff <= Decimal('0.00') and pr == 'gt':
+             raise OrderError(_('You may only change your order in a way that increases the total price.'))
+-        if ocm._totaldiff != Decimal('0.00') and pr == 'eq':
++        if totaldiff != Decimal('0.00') and pr == 'eq':
+             raise OrderError(_('You may not change your order in a way that changes the total price.'))
+-        if ocm._totaldiff < Decimal('0.00') and self.order.total + ocm._totaldiff < self.order.payment_refund_sum and pr == 'gte_paid':
++        if totaldiff < Decimal('0.00') and self.order.total + totaldiff < self.order.payment_refund_sum and pr == 'gte_paid':
+             raise OrderError(_('You may not change your order in a way that would require a refund.'))
+ 
+-        if ocm._totaldiff > Decimal('0.00') and self.order.status == Order.STATUS_PAID:
++        if totaldiff > Decimal('0.00') and self.order.status == Order.STATUS_PAID:
+             self.order.set_expires(
+                 now(),
+                 self.order.event.subevents.filter(id__in=self.order.positions.values_list('subevent_id', flat=True))
+@@ -1669,7 +1672,7 @@ class OrderChangeMixin:
+                 raise OrderError(_('You may not change your order in a way that increases the total price since '
+                                    'payments are no longer being accepted for this event.'))
+ 
+-        if ocm._totaldiff > Decimal('0.00') and self.order.status == Order.STATUS_PENDING:
++        if totaldiff > Decimal('0.00') and self.order.status == Order.STATUS_PENDING:
+             for p in self.order.payments.filter(state=OrderPayment.PAYMENT_STATE_PENDING):
+                 if not p.payment_provider.abort_pending_allowed:
+                     raise OrderError(_('You may not change your order in a way that requires additional payment while '

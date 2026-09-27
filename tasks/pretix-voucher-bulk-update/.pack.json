@@ -1,0 +1,17 @@
+{
+  "pr": 6096,
+  "sha": "dc1b62fc569fb750bcb23ceadc76522f5b2aa27f",
+  "base": "ea2c81e6dcd54633cd104621db7329b7ed3b6e01",
+  "python": "3.13",
+  "slug": "pretix-voucher-bulk-update",
+  "must_turn_green": 26,
+  "must_stay_green": 119,
+  "gold_src_files": [
+    "src/pretix/base/models/vouchers.py",
+    "src/pretix/control/forms/vouchers.py",
+    "src/pretix/control/templates/pretixcontrol/vouchers/bulk_edit.html",
+    "src/pretix/control/templates/pretixcontrol/vouchers/index.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/vouchers.py"
+  ]
+}

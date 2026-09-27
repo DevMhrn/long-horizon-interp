@@ -1,0 +1,29 @@
+{
+  "pr": 5434,
+  "sha": "1cb2d443f93516c0dec50687a5b85bb6858ed3b1",
+  "base": "a0dbf6c5db2b7d28e1db7ddf35f2849a73082f94",
+  "python": "3.11",
+  "slug": "pretix-user-email-validation",
+  "must_turn_green": 17,
+  "must_stay_green": 94,
+  "gold_src_files": [
+    "src/pretix/base/forms/auth.py",
+    "src/pretix/base/forms/user.py",
+    "src/pretix/base/migrations/0294_user_is_verified.py",
+    "src/pretix/base/models/auth.py",
+    "src/pretix/control/forms/users.py",
+    "src/pretix/control/logdisplay.py",
+    "src/pretix/control/middleware.py",
+    "src/pretix/control/templates/pretixcontrol/auth/recover.html",
+    "src/pretix/control/templates/pretixcontrol/email/confirmation_code.txt",
+    "src/pretix/control/templates/pretixcontrol/user/change_email.html",
+    "src/pretix/control/templates/pretixcontrol/user/change_password.html",
+    "src/pretix/control/templates/pretixcontrol/user/confirmation_code_dialog.html",
+    "src/pretix/control/templates/pretixcontrol/user/settings.html",
+    "src/pretix/control/templates/pretixcontrol/users/form.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/user.py",
+    "src/pretix/static/pretixbase/scss/_theme.scss",
+    "src/pretix/static/pretixcontrol/scss/_forms.scss"
+  ]
+}

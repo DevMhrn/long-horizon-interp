@@ -1,0 +1,17 @@
+[
+  "tests.api.test_checkinrpc::test_by_medium",
+  "tests.api.test_checkinrpc::test_by_medium_inactive",
+  "tests.api.test_checkinrpc::test_by_medium_multiple_orderpositions",
+  "tests.api.test_checkinrpc::test_by_medium_wrong_event",
+  "tests.api.test_checkinrpc::test_by_medium_wrong_type",
+  "tests.api.test_order_create::test_order_create_add_to_medium",
+  "tests.api.test_order_create::test_order_create_create_medium",
+  "tests.api.test_order_create::test_order_create_use_medium",
+  "tests.api.test_reusable_media::test_medium_create_linked_orderposition",
+  "tests.api.test_reusable_media::test_medium_detail",
+  "tests.api.test_reusable_media::test_medium_detail_event_permission_missing",
+  "tests.api.test_reusable_media::test_medium_list",
+  "tests.api.test_reusable_media::test_medium_lookup_cross_organizer",
+  "tests.api.test_reusable_media::test_medium_lookup_ok",
+  "tests.api.test_reusable_media::test_medium_patch"
+]

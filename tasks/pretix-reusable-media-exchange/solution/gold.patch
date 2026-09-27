@@ -1,0 +1,963 @@
+diff --git a/src/pretix/api/auth/devicesecurity.py b/src/pretix/api/auth/devicesecurity.py
+index 18a99336..7fc06e95 100644
+--- a/src/pretix/api/auth/devicesecurity.py
++++ b/src/pretix/api/auth/devicesecurity.py
+@@ -110,6 +110,8 @@ class PretixScanSecurityProfile(AllowListSecurityProfile):
+         ('POST', 'api-v1:checkinrpc.redeem'),
+         ('GET', 'api-v1:checkinrpc.search'),
+         ('GET', 'api-v1:reusablemedium-list'),
++        ('POST', 'api-v1:reusablemedium-lookup'),
++        ('PATCH', 'api-v1:reusablemedium-detail')
+     )
+ 
+ 
+diff --git a/src/pretix/api/serializers/checkin.py b/src/pretix/api/serializers/checkin.py
+index 63759c01..db716a31 100644
+--- a/src/pretix/api/serializers/checkin.py
++++ b/src/pretix/api/serializers/checkin.py
+@@ -88,11 +88,19 @@ class CheckinRPCRedeemInputSerializer(serializers.Serializer):
+     nonce = serializers.CharField(required=False, allow_null=True)
+     datetime = serializers.DateTimeField(required=False, allow_null=True)
+     answers = serializers.JSONField(required=False, allow_null=True)
++    exchange_medium_type = serializers.ChoiceField(required=False, choices=MEDIA_TYPES)
++    exchange_medium_identifier = serializers.CharField(required=False)
+ 
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+         self.fields['lists'].child_relation.queryset = CheckinList.objects.filter(event__in=self.context['events']).select_related('event')
+ 
++    def validate(self, attrs):
++        exchange_fields = ["exchange_medium_type", "exchange_medium_identifier"]
++        if any(attrs.get(k) is None for k in exchange_fields) and not all(attrs.get(k) is None for k in exchange_fields):
++            raise ValidationError("If you set any of exchange_medium_type or exchange_medium_identifier, you need to set both of them.")
++        return attrs
++
+ 
+ class MiniCheckinListSerializer(I18nAwareModelSerializer):
+     event = serializers.SlugRelatedField(slug_field='slug', read_only=True)
+diff --git a/src/pretix/api/serializers/event.py b/src/pretix/api/serializers/event.py
+index ca163f0d..52411e8f 100644
+--- a/src/pretix/api/serializers/event.py
++++ b/src/pretix/api/serializers/event.py
+@@ -871,6 +871,7 @@ class EventSettingsSerializer(SettingsSerializer):
+         'og_image',
+         'name_scheme',
+         'reusable_media_active',
++        'reusable_media_usage_enforced',
+         'reusable_media_type_barcode',
+         'reusable_media_type_barcode_identifier_length',
+         'reusable_media_type_nfc_uid',
+@@ -885,6 +886,7 @@ class EventSettingsSerializer(SettingsSerializer):
+     readonly_fields = [
+         # These are read-only since they are currently only settable on organizers, not events
+         'reusable_media_active',
++        'reusable_media_usage_enforced',
+         'reusable_media_type_barcode',
+         'reusable_media_type_barcode_identifier_length',
+         'reusable_media_type_nfc_uid',
+@@ -970,6 +972,7 @@ class DeviceEventSettingsSerializer(EventSettingsSerializer):
+         'reusable_media_type_nfc_uid',
+         'reusable_media_type_nfc_mf0aes',
+         'reusable_media_type_nfc_mf0aes_random_uid',
++        'reusable_media_usage_enforced',
+         'system_question_order',
+         'tax_rule_payment',
+         'tax_rule_cancellation',
+diff --git a/src/pretix/api/serializers/order.py b/src/pretix/api/serializers/order.py
+index 0cfcb3a4..7ce4c567 100644
+--- a/src/pretix/api/serializers/order.py
++++ b/src/pretix/api/serializers/order.py
+@@ -1043,15 +1043,13 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+     requested_valid_from = serializers.DateTimeField(required=False, allow_null=True)
+     use_reusable_medium = serializers.PrimaryKeyRelatedField(queryset=ReusableMedium.objects.none(),
+                                                              required=False, allow_null=True)
+-    add_to_reusable_medium = serializers.PrimaryKeyRelatedField(queryset=ReusableMedium.objects.none(),
+-                                                                required=False, allow_null=True)
+ 
+     class Meta:
+         model = OrderPosition
+         fields = ('positionid', 'item', 'variation', 'price', 'attendee_name', 'attendee_name_parts', 'attendee_email',
+                   'company', 'street', 'zipcode', 'city', 'country', 'state', 'is_bundled',
+                   'secret', 'addon_to', 'subevent', 'answers', 'seat', 'voucher', 'valid_from', 'valid_until',
+-                  'requested_valid_from', 'use_reusable_medium', 'add_to_reusable_medium', 'discount')
++                  'requested_valid_from', 'use_reusable_medium', 'discount')
+ 
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+@@ -1063,8 +1061,6 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+         with scopes_disabled():
+             if 'use_reusable_medium' in self.fields:
+                 self.fields['use_reusable_medium'].queryset = ReusableMedium.objects.all()
+-            if 'add_to_reusable_medium' in self.fields:
+-                self.fields['add_to_reusable_medium'].queryset = ReusableMedium.objects.all()
+ 
+     def validate_secret(self, secret):
+         if secret and OrderPosition.all.filter(order__event=self.context['event'], secret=secret).exists():
+@@ -1080,9 +1076,6 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+             )
+         return m
+ 
+-    def validate_add_to_reusable_medium(self, m):
+-        return self.validate_use_reusable_medium(m)
+-
+     def validate_item(self, item):
+         if item.event != self.context['event']:
+             raise ValidationError(
+@@ -1157,12 +1150,6 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+                 {'discount': ['You can only specify a discount if you do the price computation, but price is not set.']}
+             )
+ 
+-        if 'use_reusable_medium' in data and 'add_to_reusable_medium' in data:
+-            raise ValidationError({
+-                'use_reusable_medium': ['You can only specify either use_reusable_medium or add_to_reusable_medium.'],
+-                'add_to_reusable_medium': ['You can only specify either use_reusable_medium or add_to_reusable_medium.'],
+-            })
+-
+         return data
+ 
+ 
+@@ -1602,7 +1589,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                 pos_data['attendee_name_parts'] = {
+                     '_legacy': attendee_name
+                 }
+-            pos = OrderPosition(**{k: v for k, v in pos_data.items() if k not in ('answers', '_quotas', 'use_reusable_medium', 'add_to_reusable_medium')})
++            pos = OrderPosition(**{k: v for k, v in pos_data.items() if k not in ('answers', '_quotas', 'use_reusable_medium')})
+             if simulate:
+                 pos.order = order._wrapped
+             else:
+@@ -1676,7 +1663,6 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+         for pos_data in positions_data:
+             answers_data = pos_data.pop('answers', [])
+             use_reusable_medium = pos_data.pop('use_reusable_medium', None)
+-            add_to_reusable_medium = pos_data.pop('add_to_reusable_medium', None)
+             pos = pos_data['__instance']
+             pos._calculate_tax(invoice_address=ia)
+ 
+@@ -1718,14 +1704,17 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                         answ.options.add(*options)
+ 
+                 if use_reusable_medium:
+-                    for op_pk in use_reusable_medium.linked_orderpositions.values_list('pk', flat=True):
+-                        use_reusable_medium.log_action(
+-                            'pretix.reusable_medium.linked_orderposition.removed',
+-                            data={
+-                                'linked_orderposition': op_pk,
+-                            }
+-                        )
+-                    use_reusable_medium.linked_orderpositions.set([pos])
++                    if pos.item.media_policy not in (Item.MEDIA_POLICY_APPEND, Item.MEDIA_POLICY_APPEND_OR_NEW):
++                        for op_pk in use_reusable_medium.linked_orderpositions.values_list('pk', flat=True):
++                            use_reusable_medium.log_action(
++                                'pretix.reusable_medium.linked_orderposition.removed',
++                                data={
++                                    'linked_orderposition': op_pk,
++                                }
++                            )
++                        use_reusable_medium.linked_orderpositions.set([pos])
++                    else:
++                        use_reusable_medium.linked_orderpositions.add(pos)
+                     use_reusable_medium.log_action(
+                         'pretix.reusable_medium.linked_orderposition.added',
+                         data={
+@@ -1733,15 +1722,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                             'linked_orderposition': pos.pk,
+                         }
+                     )
+-                elif add_to_reusable_medium:
+-                    add_to_reusable_medium.linked_orderpositions.add(pos)
+-                    add_to_reusable_medium.log_action(
+-                        'pretix.reusable_medium.linked_orderposition.added',
+-                        data={
+-                            'by_order': order.code,
+-                            'linked_orderposition': pos.pk,
+-                        }
+-                    )
++                    use_reusable_medium.touch()
+ 
+         if not simulate:
+             for cp in delete_cps:
+diff --git a/src/pretix/api/serializers/organizer.py b/src/pretix/api/serializers/organizer.py
+index 47c141ae..9d595f76 100644
+--- a/src/pretix/api/serializers/organizer.py
++++ b/src/pretix/api/serializers/organizer.py
+@@ -605,6 +605,7 @@ class OrganizerSettingsSerializer(SettingsSerializer):
+         'cookie_consent_dialog_button_yes',
+         'cookie_consent_dialog_button_no',
+         'reusable_media_active',
++        'reusable_media_usage_enforced',
+         'reusable_media_type_barcode',
+         'reusable_media_type_barcode_identifier_length',
+         'reusable_media_type_nfc_uid',
+diff --git a/src/pretix/api/views/checkin.py b/src/pretix/api/views/checkin.py
+index 6652b96c..5016d54f 100644
+--- a/src/pretix/api/views/checkin.py
++++ b/src/pretix/api/views/checkin.py
+@@ -69,8 +69,10 @@ from pretix.base.models import (
+ from pretix.base.models.orders import PrintLog
+ from pretix.base.permissions import AnyPermissionOf
+ from pretix.base.services.checkin import (
+-    CheckInError, RequiredQuestionsError, SQLLogic, perform_checkin,
++    CheckInError, RequiredMediaExchangeError, RequiredQuestionsError, SQLLogic,
++    perform_checkin,
+ )
++from pretix.base.services.media import perform_media_exchange
+ from pretix.base.signals import checkin_annulled
+ from pretix.helpers import OF_SELF
+ 
+@@ -454,7 +456,8 @@ def _checkin_list_position_queryset(checkinlists, ignore_status=False, ignore_pr
+ 
+ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force, checkin_type, ignore_unpaid, nonce,
+                     untrusted_input, user, auth, expand, pdf_data, request, questions_supported, canceled_supported,
+-                    source_type='barcode', legacy_url_support=False, simulate=False, gate=None, use_order_locale=False):
++                    source_type='barcode', legacy_url_support=False, simulate=False, gate=None, use_order_locale=False,
++                    exchange_medium_type=None, exchange_medium_identifier=None):
+     if not checkinlists:
+         raise ValidationError('No check-in list passed.')
+ 
+@@ -463,6 +466,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+ 
+     device = auth if isinstance(auth, Device) else None
+     gate = gate or (auth.gate if isinstance(auth, Device) else None)
++    medium = None
+ 
+     context = {
+         'request': request,
+@@ -522,7 +526,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+     #    with respecting the force option), or it's a reusable medium (-> proceed with that)
+     if not op_candidates:
+         try:
+-            media = ReusableMedium.objects.active().filter(
++            medium = ReusableMedium.objects.active().filter(
+                 Exists(ReusableMedium.linked_orderpositions.through.objects.filter(reusablemedium_id=OuterRef('pk')))
+             ).get(
+                 organizer_id=checkinlists[0].event.organizer_id,
+@@ -630,7 +634,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                     'list': MiniCheckinListSerializer(list_by_event[revoked_matches[0].event_id]).data,
+                 }, status=400)
+         else:
+-            linked_ops = media.linked_orderpositions.all().select_related("order").prefetch_related("addons")
++            linked_ops = medium.linked_orderpositions.all().select_related("order").prefetch_related("addons")
+             linked_event_ids = {op.order.event_id for op in linked_ops}
+             if not any(event_id in list_by_event for event_id in linked_event_ids):
+                 # Medium exists but connected ticket is for the wrong event
+@@ -661,7 +665,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+             op_candidates = []
+             for op in linked_ops:
+                 if op.order.event_id in list_by_event:
+-                    reusable_medium_used = media
++                    reusable_medium_used = medium
+                     op_candidates.append(op)
+                     if list_by_event[op.order.event_id].addon_match:
+                         op_candidates += list(op.addons.all())
+@@ -804,7 +808,14 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+         locale = op.order.event.settings.locale
+     with language(locale):
+         try:
+-            perform_checkin(
++            if exchange_medium_identifier and medium:
++                # Cannot scan a medium and then request to exchange it
++                raise CheckInError(
++                    gettext('You cannot exchange a medium for a medium.'),
++                    'error'
++                )
++
++            checkin_args = dict(
+                 op=op,
+                 clist=list_by_event[op.order.event_id],
+                 given_answers=given_answers,
+@@ -822,7 +833,25 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                 from_revoked_secret=from_revoked_secret,
+                 simulate=simulate,
+                 gate=gate,
++                reusable_medium=medium,
+             )
++
++            if exchange_medium_identifier:  # other fields are filled, see CheckinRPCRedeemInputSerializer.validate
++                with transaction.atomic():
++                    # Do exchange and check-in atomically, i.e. both succeed or both fail
++                    medium = perform_media_exchange(
++                        organizer=request.organizer,
++                        media_type=exchange_medium_type,
++                        identifier=exchange_medium_identifier,
++                        link_orderposition=op,
++                        user=user,
++                        auth=auth,
++                    )
++                    source_type = medium.media_type.identifier
++                    checkin_args['reusable_medium'] = medium
++                    perform_checkin(**checkin_args)
++            else:
++                perform_checkin(**checkin_args)
+         except RequiredQuestionsError as e:
+             return Response({
+                 'status': 'incomplete',
+@@ -834,6 +863,17 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                 ],
+                 'list': MiniCheckinListSerializer(list_by_event[op.order.event_id]).data,
+             }, status=400)
++        except RequiredMediaExchangeError as e:
++            return Response({
++                'status': 'exchange',
++                'require_attention': op.require_checkin_attention,
++                'checkin_texts': op.checkin_texts,
++                'position': CheckinListOrderPositionSerializer(op, context=_make_context(context, op.order.event)).data,
++                'media_policy': e.media_policy,
++                'media_type': e.media_type,
++                'list': MiniCheckinListSerializer(list_by_event[op.order.event_id]).data,
++                'reason_explanation': e.msg,
++            }, status=400)
+         except CheckInError as e:
+             if not simulate:
+                 op.order.log_action('pretix.event.checkin.denied', data={
+@@ -1021,6 +1061,8 @@ class CheckinRPCRedeemView(views.APIView):
+             canceled_supported=True,
+             request=self.request,  # this is not clean, but we need it in the serializers for URL generation
+             legacy_url_support=False,
++            exchange_medium_type=s.validated_data.get('exchange_medium_type'),
++            exchange_medium_identifier=s.validated_data.get('exchange_medium_identifier'),
+         )
+ 
+ 
+diff --git a/src/pretix/api/views/media.py b/src/pretix/api/views/media.py
+index 7b150912..5c200793 100644
+--- a/src/pretix/api/views/media.py
++++ b/src/pretix/api/views/media.py
+@@ -196,7 +196,7 @@ class ReusableMediaViewSet(viewsets.ModelViewSet):
+ 
+             return Response({"result": None})
+ 
+-    @scopes_disabled()  # we are sure enough that get_queryset() is correct, so we save some perforamnce
++    @scopes_disabled()  # we are sure enough that get_queryset() is correct, so we save some performance
+     def list(self, request, **kwargs):
+         date = serializers.DateTimeField().to_representation(now())
+         queryset = self.filter_queryset(self.get_queryset())
+diff --git a/src/pretix/base/media.py b/src/pretix/base/media.py
+index 47a1be98..f6a4b24f 100644
+--- a/src/pretix/base/media.py
++++ b/src/pretix/base/media.py
+@@ -26,6 +26,7 @@ from django.utils.translation import gettext_lazy as _
+ 
+ class BaseMediaType:
+     medium_created_by_server = False
++    medium_created_from_unknown_supported = False
+     supports_orderposition = False
+     supports_giftcard = False
+ 
+@@ -56,7 +57,7 @@ class BaseMediaType:
+     def is_active(self, organizer):
+         return organizer.settings.get(f'reusable_media_type_{self.identifier}', as_type=bool, default=False)
+ 
+-    def handle_unknown(self, organizer, identifier, user, auth):
++    def handle_unknown(self, organizer, identifier, user, auth, force_create=False):
+         pass
+ 
+     def handle_new(self, organizer, medium, user, auth):
+@@ -88,23 +89,32 @@ class NfcUidMediaType(BaseMediaType):
+     verbose_name = _('NFC UID-based')
+     icon = 'pretixbase/img/media/nfc_uid.svg'
+     medium_created_by_server = False
++    medium_created_from_unknown_supported = True
+     supports_giftcard = True
+-    supports_orderposition = False
++    supports_orderposition = True
+ 
+-    def handle_unknown(self, organizer, identifier, user, auth):
++    def handle_unknown(self, organizer, identifier, user, auth, force_create=False):
+         from pretix.base.models import GiftCard, ReusableMedium
+ 
+-        if organizer.settings.get(f'reusable_media_type_{self.identifier}_autocreate_giftcard', as_type=bool):
++        create_giftcard = organizer.settings.get(f'reusable_media_type_{self.identifier}_autocreate_giftcard', as_type=bool)
++        if create_giftcard or force_create:
+             if identifier.startswith("08"):
+                 # Don't create gift cards for NFC UIDs that start with 08, which represents NFC cards that issue random
+                 # UIDs on every read, so they won't be useful.
+                 return
+             with transaction.atomic():
+-                gc = GiftCard.objects.create(
+-                    issuer=organizer,
+-                    expires=organizer.default_gift_card_expiry,
+-                    currency=organizer.settings.get(f'reusable_media_type_{self.identifier}_autocreate_giftcard_currency'),
+-                )
++                if create_giftcard:
++                    gc = GiftCard.objects.create(
++                        issuer=organizer,
++                        expires=organizer.default_gift_card_expiry,
++                        currency=organizer.settings.get(f'reusable_media_type_{self.identifier}_autocreate_giftcard_currency'),
++                    )
++                    gc.log_action(
++                        'pretix.giftcards.created',
++                        user=user, auth=auth,
++                    )
++                else:
++                    gc = None
+                 m = ReusableMedium.objects.create(
+                     type=self.identifier,
+                     identifier=identifier,
+@@ -116,10 +126,6 @@ class NfcUidMediaType(BaseMediaType):
+                     'pretix.reusable_medium.created.auto',
+                     user=user, auth=auth,
+                 )
+-                gc.log_action(
+-                    'pretix.giftcards.created',
+-                    user=user, auth=auth,
+-                )
+                 return m
+ 
+ 
+@@ -129,7 +135,7 @@ class NfcMf0aesMediaType(BaseMediaType):
+     icon = 'pretixbase/img/media/nfc_secure.svg'
+     medium_created_by_server = False
+     supports_giftcard = True
+-    supports_orderposition = False
++    supports_orderposition = True
+ 
+     def handle_new(self, organizer, medium, user, auth):
+         from pretix.base.models import GiftCard
+diff --git a/src/pretix/base/models/checkin.py b/src/pretix/base/models/checkin.py
+index 0926cede..bd06bb11 100644
+--- a/src/pretix/base/models/checkin.py
++++ b/src/pretix/base/models/checkin.py
+@@ -346,11 +346,14 @@ class Checkin(models.Model):
+     REASON_INCOMPLETE = 'incomplete'
+     REASON_ALREADY_REDEEMED = 'already_redeemed'
+     REASON_AMBIGUOUS = 'ambiguous'
++    REASON_MEDIUM_INVALID = 'medium_invalid'
++    REASON_MEDIUM_EXISTS = 'medium_exists'
+     REASON_ERROR = 'error'
+     REASON_BLOCKED = 'blocked'
+     REASON_UNAPPROVED = 'unapproved'
+     REASON_INVALID_TIME = 'invalid_time'
+     REASON_ANNULLED = 'annulled'
++    REASON_ALREADY_EXCHANGED = 'already_exchanged'
+     REASONS = (
+         (REASON_CANCELED, _('Order canceled')),
+         (REASON_INVALID, _('Unknown ticket')),
+@@ -366,6 +369,9 @@ class Checkin(models.Model):
+         (REASON_UNAPPROVED, _('Order not approved')),
+         (REASON_INVALID_TIME, _('Ticket not valid at this time')),
+         (REASON_ANNULLED, _('Check-in annulled')),
++        (REASON_ALREADY_EXCHANGED, _('Ticket already exchanged')),
++        (REASON_MEDIUM_INVALID, _('Reusable medium invalid')),
++        (REASON_MEDIUM_EXISTS, _('Reusable medium already exists')),
+     )
+ 
+     successful = models.BooleanField(
+diff --git a/src/pretix/base/models/items.py b/src/pretix/base/models/items.py
+index feb7dec8..79f1229d 100644
+--- a/src/pretix/base/models/items.py
++++ b/src/pretix/base/models/items.py
+@@ -452,11 +452,16 @@ class Item(LoggedModel):
+     MEDIA_POLICY_REUSE = 'reuse'
+     MEDIA_POLICY_NEW = 'new'
+     MEDIA_POLICY_REUSE_OR_NEW = 'reuse_or_new'
++    MEDIA_POLICY_APPEND = 'append'
++    MEDIA_POLICY_APPEND_OR_NEW = 'append_or_new'
+     MEDIA_POLICIES = (
+-        (None, _("Don't use re-usable media, use regular one-off tickets")),
+-        (MEDIA_POLICY_REUSE, _('Require an existing medium to be re-used')),
++        (None, _("Don't use reusable media, use regular one-off tickets")),
+         (MEDIA_POLICY_NEW, _('Require a previously unknown medium to be newly added')),
+-        (MEDIA_POLICY_REUSE_OR_NEW, _('Require either an existing or a new medium to be used')),
++        (MEDIA_POLICY_REUSE, _('Require an existing medium to be reused, replacing any previous tickets')),
++        (MEDIA_POLICY_REUSE_OR_NEW, _('Require either an existing or a new medium to be used, replacing any previous tickets')),
++        (MEDIA_POLICY_APPEND, _('Require an existing medium to be reused, adding to any previous tickets')),
++        (MEDIA_POLICY_APPEND_OR_NEW,
++         _('Require either an existing or a new medium to be used, adding to any previous tickets')),
+     )
+ 
+     objects = ItemQuerySetManager()
+@@ -769,7 +774,7 @@ class Item(LoggedModel):
+         null=True, blank=True, max_length=16,
+         verbose_name=_('Reusable media policy'),
+         help_text=_(
+-            'If this product should be stored on a re-usable physical medium, you can attach a physical media policy. '
++            'If this product should be stored on a reusable physical medium, you can attach a physical media policy. '
+             'This is not required for regular tickets, which just use a one-time barcode, but only for products like '
+             'renewable season tickets or re-chargeable gift card wristbands. '
+             'This is an advanced feature that also requires specific configuration of ticketing and printing settings.'
+@@ -778,7 +783,7 @@ class Item(LoggedModel):
+     media_type = models.CharField(
+         max_length=100,
+         null=True, blank=True,
+-        choices=[(None, _("Don't use re-usable media, use regular one-off tickets"))] + [(k, v) for k, v in MEDIA_TYPES.items()],
++        choices=[(None, _("Don't use reusable media, use regular one-off tickets"))] + [(k, v) for k, v in MEDIA_TYPES.items()],
+         verbose_name=_('Reusable media type'),
+         help_text=_(
+             'Select the type of physical medium that should be used for this product. Note that not all media types '
+@@ -995,6 +1000,11 @@ class Item(LoggedModel):
+                 raise ValidationError(_('The selected media type does not support usage for tickets currently.'))
+             if not mt.supports_giftcard and issue_giftcard:
+                 raise ValidationError(_('The selected media type does not support usage for gift cards currently.'))
++            if media_policy in (Item.MEDIA_POLICY_NEW, Item.MEDIA_POLICY_APPEND_OR_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW):
++                if not mt.medium_created_by_server and not mt.medium_created_from_unknown_supported:
++                    raise ValidationError(_('The selected media type requires all media to be registered in the system '
++                                            'prior to their usage. Therefore, the selected media policy does not make '
++                                            'sense for this media type.'))
+             if issue_giftcard:
+                 raise ValidationError(_('You currently cannot create gift cards with a reusable media policy. Instead, '
+                                         'gift cards for some reusable media types can be created or re-charged directly '
+@@ -2220,7 +2230,7 @@ class Quota(LoggedModel):
+ class ItemMetaProperty(LoggedModel):
+     """
+     An event can have ItemMetaProperty objects attached to define meta information fields
+-    for its items. This information can be re-used for example in ticket layouts.
++    for its items. This information can be reused for example in ticket layouts.
+ 
+     :param event: The event this property is defined for.
+     :type event: Event
+diff --git a/src/pretix/base/models/media.py b/src/pretix/base/models/media.py
+index eabefae5..097c7803 100644
+--- a/src/pretix/base/models/media.py
++++ b/src/pretix/base/models/media.py
+@@ -129,7 +129,10 @@ class ReusableMedium(LoggedModel):
+ 
+     @property
+     def is_expired(self):
+-        return self.expires and self.expires > now()
++        return self.expires and self.expires < now()
++
++    def touch(self):
++        self.save(update_fields=['updated'])
+ 
+     class Meta:
+         unique_together = (("identifier", "type", "organizer"),)
+diff --git a/src/pretix/base/services/cart.py b/src/pretix/base/services/cart.py
+index 99604e63..c9ddf51a 100644
+--- a/src/pretix/base/services/cart.py
++++ b/src/pretix/base/services/cart.py
+@@ -287,11 +287,11 @@ def _check_position_constraints(
+         raise CartPositionError(error_messages['unavailable'])
+ 
+     # Invalid media policy for online sale
+-    if item.media_policy in (Item.MEDIA_POLICY_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW):
++    if item.media_policy in (Item.MEDIA_POLICY_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW, Item.MEDIA_POLICY_APPEND_OR_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW):
+         mt = MEDIA_TYPES[item.media_type]
+         if not mt.medium_created_by_server:
+             raise CartPositionError(error_messages['media_usage_not_implemented'])
+-    elif item.media_policy == Item.MEDIA_POLICY_REUSE:
++    elif item.media_policy in (Item.MEDIA_POLICY_REUSE, Item.MEDIA_POLICY_APPEND):
+         raise CartPositionError(error_messages['media_usage_not_implemented'])
+ 
+     # Item removed from sales channel
+diff --git a/src/pretix/base/services/checkin.py b/src/pretix/base/services/checkin.py
+index ecf4cf7a..3ac7b679 100644
+--- a/src/pretix/base/services/checkin.py
++++ b/src/pretix/base/services/checkin.py
+@@ -867,6 +867,15 @@ class RequiredQuestionsError(Exception):
+         super().__init__(msg)
+ 
+ 
++class RequiredMediaExchangeError(Exception):
++    def __init__(self, msg, code, media_policy, media_type):
++        self.msg = msg
++        self.code = code
++        self.media_policy = media_policy
++        self.media_type = media_type
++        super().__init__(msg)
++
++
+ def _save_answers(op, answers, given_answers):
+     def _create_answer(question, answer):
+         try:
+@@ -939,7 +948,7 @@ def perform_checkin(op: OrderPosition, clist: CheckinList, given_answers: dict,
+                     ignore_unpaid=False, nonce=None, datetime=None, questions_supported=True,
+                     user=None, auth=None, canceled_supported=False, type=Checkin.TYPE_ENTRY,
+                     raw_barcode=None, raw_source_type=None, from_revoked_secret=False, simulate=False,
+-                    gate=None):
++                    gate=None, reusable_medium=None):
+     """
+     Create a checkin for this particular order position and check-in list. Fails with CheckInError if the check in is
+     not valid at this time.
+@@ -955,6 +964,7 @@ def perform_checkin(op: OrderPosition, clist: CheckinList, given_answers: dict,
+     :param datetime: The datetime of the checkin, defaults to now.
+     :param simulate: If true, the check-in is not saved.
+     :param gate: The gate the check-in was performed at.
++    :param reusable_medium: The medium that is available for an exchange
+     """
+ 
+     # !!!!!!!!!
+@@ -1035,7 +1045,7 @@ def perform_checkin(op: OrderPosition, clist: CheckinList, given_answers: dict,
+ 
+     with transaction.atomic():
+         # Lock order positions, if it is an entry. We don't need it for exits, as a race condition wouldn't be problematic
+-        opqs = OrderPosition.all
++        opqs = OrderPosition.all.select_related("order", "item")
+         if type != Checkin.TYPE_EXIT:
+             opqs = opqs.select_for_update(of=OF_SELF)
+         op = opqs.get(pk=op.pk)
+@@ -1101,6 +1111,24 @@ def perform_checkin(op: OrderPosition, clist: CheckinList, given_answers: dict,
+                 require_answers
+             )
+ 
++        required_media_policy = op.item.media_policy
++        required_media_type = op.item.media_type
++        require_a_medium = required_media_policy and required_media_type
++        linked_media = op.linked_media
++        if require_a_medium and not reusable_medium and not force:
++            if not linked_media.exists():
++                raise RequiredMediaExchangeError(
++                    _('Ticket needs to be exchanged to a suitable medium.'),
++                    'exchange',
++                    required_media_policy,
++                    required_media_type
++                )
++            elif op.organizer.settings.reusable_media_usage_enforced:
++                raise CheckInError(
++                    _('This ticket has already been exchanged for a reusable medium that now needs to be used instead.'),
++                    'already_exchanged',
++                )
++
+         device = None
+         if isinstance(auth, Device):
+             device = auth
+diff --git a/src/pretix/base/services/media.py b/src/pretix/base/services/media.py
+index c431e79a..63272421 100644
+--- a/src/pretix/base/services/media.py
++++ b/src/pretix/base/services/media.py
+@@ -23,10 +23,13 @@ import secrets
+ 
+ from django.db import IntegrityError
+ from django.db.models import Q
++from django.utils.translation import gettext as _
+ from django_scopes import scopes_disabled
+ 
+-from pretix.base.models import GiftCardAcceptance
+-from pretix.base.models.media import MediumKeySet
++from pretix.base.media import MEDIA_TYPES
++from pretix.base.models import Checkin, GiftCardAcceptance, Item
++from pretix.base.models.media import MediumKeySet, ReusableMedium
++from pretix.base.services.checkin import CheckInError
+ 
+ 
+ def create_nfc_mf0aes_keyset(organizer):
+@@ -70,3 +73,174 @@ def get_keysets_for_organizer(organizer):
+         if new_set:
+             sets.append(new_set)
+     return sets
++
++
++def perform_media_exchange(organizer, media_type, identifier, link_orderposition, user, auth):
++    """
++    Create or retrieve a medium, then link the order position to it. Expected to be called in a transaction.
++
++    :param organizer: Organizer to operate in
++    :param media_type: Type of medium to operate with
++    :param identifier: Identifier of the medium
++    :param link_orderposition: Position to link to the medium
++    :return: ReusableMedium
++    """
++    medium = None
++    media_policy = link_orderposition.item.media_policy
++
++    if media_type not in MEDIA_TYPES:  # should be caught by serializer already
++        raise CheckInError(
++            _('Invalid medium type.'),
++            Checkin.REASON_ERROR,
++            reason=_('Invalid medium type.'),
++        )
++
++    if not MEDIA_TYPES[media_type].is_active(organizer):
++        raise CheckInError(
++            _('Medium type is not enabled for organizer.'),
++            Checkin.REASON_ERROR,
++            reason=_('Medium type is not enabled for organizer.'),
++        )
++
++    if link_orderposition.item.media_type != media_type:
++        raise CheckInError(
++            _('Incorrect medium type for product.'),
++            Checkin.REASON_PRODUCT,
++            reason=_('Incorrect medium type for product.'),
++        )
++
++    if link_orderposition.linked_media.exists():
++        raise CheckInError(
++            _('Ticket is already exchanged for reusable medium.'),
++            Checkin.REASON_ALREADY_EXCHANGED,
++            reason=_('Ticket is already exchanged for reusable medium.'),
++        )
++
++    if media_policy in (Item.MEDIA_POLICY_APPEND, Item.MEDIA_POLICY_APPEND_OR_NEW, Item.MEDIA_POLICY_NEW):
++        link_action = "append"
++    else:
++        link_action = "replace"
++
++    if media_policy in (Item.MEDIA_POLICY_REUSE, Item.MEDIA_POLICY_APPEND):
++        try:
++            medium = ReusableMedium.objects.get(
++                type=media_type,
++                identifier=identifier,
++                organizer=organizer,
++            )
++        except ReusableMedium.DoesNotExist:
++            raise CheckInError(
++                _('Reusable medium not found.'),
++                Checkin.REASON_MEDIUM_INVALID,
++                reason=_('Reusable medium not found.'),
++            )
++        else:
++            if medium.is_expired or not medium.active:
++                raise CheckInError(
++                    _('Reusable medium is inactive or expired.'),
++                    Checkin.REASON_MEDIUM_INVALID,
++                    reason=_('Reusable medium is inactive or expired.'),
++                )
++
++    elif media_policy in (Item.MEDIA_POLICY_REUSE_OR_NEW, Item.MEDIA_POLICY_APPEND_OR_NEW):
++        try:
++            medium = ReusableMedium.objects.get(
++                type=media_type,
++                identifier=identifier,
++                organizer=organizer,
++            )
++        except ReusableMedium.DoesNotExist:
++            if not MEDIA_TYPES[media_type].medium_created_from_unknown_supported:
++                raise CheckInError(
++                    _('Reusable medium not found and could not be created.'),
++                    Checkin.REASON_MEDIUM_INVALID,
++                )
++
++            medium = MEDIA_TYPES[media_type].handle_unknown(organizer, identifier, user, auth, force_create=True)
++            if not medium:
++                raise CheckInError(
++                    _('Reusable medium not found and could not be created.'),
++                    Checkin.REASON_MEDIUM_INVALID,
++                )
++
++        if medium.is_expired or not medium.active:
++            raise CheckInError(
++                _('Reusable medium is inactive or expired.'),
++                Checkin.REASON_MEDIUM_INVALID,
++                reason=_('Reusable medium is inactive or expired.'),
++            )
++
++    elif media_policy == Item.MEDIA_POLICY_NEW:
++        if not MEDIA_TYPES[media_type].medium_created_from_unknown_supported:
++            raise CheckInError(
++                _('Reusable medium not found and could not be created.'),
++                Checkin.REASON_MEDIUM_INVALID,
++            )
++        try:
++            medium = MEDIA_TYPES[media_type].handle_unknown(organizer, identifier, user, auth, force_create=True)
++        except IntegrityError:
++            raise CheckInError(
++                _('Reusable medium already exists.'),
++                Checkin.REASON_MEDIUM_EXISTS,
++            )
++        else:
++            if not medium:
++                raise CheckInError(
++                    _('Reusable medium could not be created.'),
++                    Checkin.REASON_MEDIUM_INVALID,
++                )
++
++    else:
++        raise CheckInError(
++            _('Product does not support medium exchange.'),
++            Checkin.REASON_PRODUCT,
++            reason=_('Product does not support medium exchange.'),
++        )
++
++    if link_action == 'append':
++        medium.linked_orderpositions.add(link_orderposition)
++        medium.log_action(
++            'pretix.reusable_medium.linked_orderposition.added',
++            user=user,
++            auth=auth,
++            data={
++                'linked_orderposition': link_orderposition,
++            }
++        )
++    elif link_action == 'replace':
++        already_found = False
++        for op_pk in medium.linked_orderpositions.values_list('pk', flat=True):
++            if op_pk == link_orderposition.pk:
++                already_found = True
++                continue
++            else:
++                medium.log_action(
++                    'pretix.reusable_medium.linked_orderposition.removed',
++                    data={
++                        'linked_orderposition': op_pk,
++                    }
++                )
++        if not already_found:
++            medium.linked_orderpositions.set([link_orderposition])
++            medium.log_action(
++                'pretix.reusable_medium.linked_orderposition.added',
++                user=user,
++                auth=auth,
++                data={
++                    'linked_orderposition': link_orderposition,
++                }
++            )
++
++    link_orderposition.order.log_action(
++        'pretix.reusable_medium.exchanged',
++        data={
++            'position': link_orderposition.pk,
++            'positionid': link_orderposition.positionid,
++            'medium': medium.pk,
++            'medium_identifier': medium.identifier,
++            'medium_type': medium.media_type.identifier,
++        }
++    )
++    medium.touch()
++
++    return medium
+diff --git a/src/pretix/base/services/orders.py b/src/pretix/base/services/orders.py
+index cdd0cd2f..dc733633 100644
+--- a/src/pretix/base/services/orders.py
++++ b/src/pretix/base/services/orders.py
+@@ -3506,7 +3506,7 @@ def signal_listener_issue_media(sender: Event, order: Order, **kwargs):
+     from pretix.base.models import ReusableMedium
+ 
+     for p in order.positions.all():
+-        if p.item.media_policy in (Item.MEDIA_POLICY_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW):
++        if p.item.media_policy in (Item.MEDIA_POLICY_NEW, Item.MEDIA_POLICY_REUSE_OR_NEW, Item.MEDIA_POLICY_APPEND_OR_NEW):
+             mt = MEDIA_TYPES[p.item.media_type]
+             if mt.medium_created_by_server and not p.linked_media.exists():
+                 rm = ReusableMedium.objects.create(
+diff --git a/src/pretix/base/settings.py b/src/pretix/base/settings.py
+index f3170a0b..ec6224e7 100644
+--- a/src/pretix/base/settings.py
++++ b/src/pretix/base/settings.py
+@@ -211,12 +211,25 @@ DEFAULTS = {
+         'form_class': forms.BooleanField,
+         'serializer_class': serializers.BooleanField,
+         'form_kwargs': dict(
+-            label=_("Activate re-usable media"),
+-            help_text=_("The re-usable media feature allows you to connect tickets and gift cards with physical media "
+-                        "such as wristbands or chip cards that may be re-used for different tickets or gift cards "
++            label=_("Activate reusable media"),
++            help_text=_("The reusable media feature allows you to connect tickets and gift cards with physical media "
++                        "such as wristbands or chip cards that may be reused for different tickets or gift cards "
+                         "later.")
+         )
+     },
++    'reusable_media_usage_enforced': {
++        'default': 'False',
++        'type': bool,
++        'form_class': forms.BooleanField,
++        'serializer_class': serializers.BooleanField,
++        'form_kwargs': dict(
++            label=_("Enforce the usage of issued reusable media for check-in"),
++            help_text=_("If enabled, a ticket barcode will not be accepted anymore, if a reusable medium has been "
++                        "created and linked to a ticket. Keeping this option turned off will treat the reusable "
++                        "medium and ticket as equals."),
++            widget=forms.CheckboxInput(attrs={'data-display-dependency': '#id_settings-reusable_media_active'}),
++        )
++    },
+     'reusable_media_type_barcode': {
+         'default': 'False',
+         'type': bool,
+diff --git a/src/pretix/control/forms/organizer.py b/src/pretix/control/forms/organizer.py
+index a1e39981..f4175ddc 100644
+--- a/src/pretix/control/forms/organizer.py
++++ b/src/pretix/control/forms/organizer.py
+@@ -636,6 +636,7 @@ class OrganizerSettingsForm(SettingsForm):
+         'cookie_consent_dialog_button_yes',
+         'cookie_consent_dialog_button_no',
+         'reusable_media_active',
++        'reusable_media_usage_enforced',
+         'reusable_media_type_barcode',
+         'reusable_media_type_barcode_identifier_length',
+         'reusable_media_type_nfc_uid',
+diff --git a/src/pretix/control/logdisplay.py b/src/pretix/control/logdisplay.py
+index 84e3365a..1204fcc8 100644
+--- a/src/pretix/control/logdisplay.py
++++ b/src/pretix/control/logdisplay.py
+@@ -746,6 +746,7 @@ class CoreUserImpersonatedLogEntryType(UserImpersonatedLogEntryType):
+     'pretix.reusable_medium.linked_orderposition.added': _('A new ticket has been added to the medium.'),
+     'pretix.reusable_medium.linked_orderposition.removed': _('A ticket has been removed from the medium.'),
+     'pretix.reusable_medium.linked_orderposition.changed': _('The medium has been connected to a new ticket.'),
++    'pretix.reusable_medium.exchanged': _('The ticket #{positionid} was exchanged for reusable medium {medium_identifier}.'),
+     'pretix.reusable_medium.linked_giftcard.changed': _('The medium has been connected to a new gift card.'),
+     'pretix.email.error': _('Sending of an email has failed.'),
+     'pretix.event.comment': _('The event\'s internal comment has been updated.'),
+diff --git a/src/pretix/control/templates/pretixcontrol/checkin/simulator.html b/src/pretix/control/templates/pretixcontrol/checkin/simulator.html
+index 2ebb94a3..48b5c5e2 100644
+--- a/src/pretix/control/templates/pretixcontrol/checkin/simulator.html
++++ b/src/pretix/control/templates/pretixcontrol/checkin/simulator.html
+@@ -54,6 +54,8 @@
+                     <span class="fa fa-check-circle"></span>
+                 {% elif result.status == "incomplete" %}
+                     <span class="fa fa-question-circle"></span>
++                {% elif result.status == "exchange" %}
++                    <span class="fa fa-recycle"></span>
+                 {% elif result.status == "error" %}
+                     {% if result.reason == "already_redeemed" %}
+                         <span class="fa fa-warning"></span>
+@@ -79,6 +81,14 @@
+                             </li>
+                         {% endfor %}
+                     </ul>
++                {% elif result.status == "exchange" %}
++                    <h3 class="nomargin-top">{% trans "Media exchange required" %}</h3>
++                    <p>
++                        {% blocktrans trimmed with media_policy=media_policies|getitem:result.media_policy media_type=media_types|getitem:result.media_type %}
++                            This ticket needs to be exchanged into a <strong>{{ media_type }}</strong> reusable medium.
++                            <strong>{{ media_policy }}</strong>.
++                        {% endblocktrans %}
++                    </p>
+                 {% elif result.status == "error" %}
+                     <h3 class="nomargin-top">{{ reason_labels|getitem:result.reason }}</h3>
+                     {% if result.reason_explanation %}
+diff --git a/src/pretix/control/templates/pretixcontrol/organizers/edit.html b/src/pretix/control/templates/pretixcontrol/organizers/edit.html
+index 2cfb241a..960c6fb4 100644
+--- a/src/pretix/control/templates/pretixcontrol/organizers/edit.html
++++ b/src/pretix/control/templates/pretixcontrol/organizers/edit.html
+@@ -222,6 +222,7 @@
+                     <fieldset>
+                         <legend>{% trans "Reusable media" %}</legend>
+                         {% bootstrap_field sform.reusable_media_active layout="control" %}
++                        {% bootstrap_field sform.reusable_media_usage_enforced layout="control" %}
+                         <div data-display-dependency="#{{ sform.reusable_media_active.id_for_label }}">
+ 
+                             <div class="panel panel-default">
+diff --git a/src/pretix/control/views/checkin.py b/src/pretix/control/views/checkin.py
+index 51775210..446aad27 100644
+--- a/src/pretix/control/views/checkin.py
++++ b/src/pretix/control/views/checkin.py
+@@ -50,7 +50,7 @@ from i18nfield.strings import LazyI18nString
+ 
+ from pretix.api.views.checkin import _redeem_process
+ from pretix.base.media import MEDIA_TYPES
+-from pretix.base.models import Checkin, LogEntry, Order, OrderPosition
++from pretix.base.models import Checkin, Item, LogEntry, Order, OrderPosition
+ from pretix.base.models.checkin import CheckinList
+ from pretix.base.models.orders import PrintLog
+ from pretix.base.permissions import AnyPermissionOf
+@@ -533,6 +533,8 @@ class CheckInListSimulator(EventPermissionRequiredMixin, FormView):
+             checkinlist=self.list,
+             result=self.result,
+             reason_labels=dict(Checkin.REASONS),
++            media_policies=dict(Item.MEDIA_POLICIES),
++            media_types=dict(MEDIA_TYPES),
+         )
+ 
+     def form_valid(self, form):
+diff --git a/src/pretix/static/jsi18n/en/djangojs.js b/src/pretix/static/jsi18n/en/djangojs.js
+index 5dee27a8..4d833a71 100644
+--- a/src/pretix/static/jsi18n/en/djangojs.js
++++ b/src/pretix/static/jsi18n/en/djangojs.js
+@@ -1,5 +1,4 @@
+ 
+-
+ 'use strict';
+ {
+   const globals = this;
+diff --git a/src/pretix/static/pretixcontrol/scss/main.scss b/src/pretix/static/pretixcontrol/scss/main.scss
+index 67b3f22b..3941b330 100644
+--- a/src/pretix/static/pretixcontrol/scss/main.scss
++++ b/src/pretix/static/pretixcontrol/scss/main.scss
+@@ -864,6 +864,9 @@ tbody th {
+ .checkin-sim-result-status-incomplete {
+     background: $brand-primary;
+ }
++.checkin-sim-result-status-exchange {
++    background: $brand-primary;
++}
+ .checkin-sim-result-status-error {
+     background: $brand-danger;
+ }

@@ -1,0 +1,310 @@
+diff --git a/src/pretix/control/forms/waitinglist.py b/src/pretix/control/forms/waitinglist.py
+index 7dc33c4a..cf77380f 100644
+--- a/src/pretix/control/forms/waitinglist.py
++++ b/src/pretix/control/forms/waitinglist.py
+@@ -19,17 +19,44 @@
+ # You should have received a copy of the GNU Affero General Public License along with this program.  If not, see
+ # <https://www.gnu.org/licenses/>.
+ #
++from django import forms
+ from django.urls import reverse
++from django.utils.translation import gettext_lazy as _
+ from django_scopes.forms import SafeModelChoiceField
++from phonenumber_field.formfields import PhoneNumberField
+ 
+ from pretix.base.forms import I18nModelForm
++from pretix.base.forms.questions import (
++    NamePartsFormField, WrappedPhoneNumberPrefixWidget,
++)
+ from pretix.base.models import WaitingListEntry
+ from pretix.control.forms.widgets import Select2
+ 
+ 
+-class WaitingListEntryTransferForm(I18nModelForm):
++class WaitingListEntryEditForm(I18nModelForm):
++    itemvar = forms.ChoiceField(
++        error_messages={
++            'invalid_choice': _("Select a valid choice.")
++        }
++    )
+ 
+     def __init__(self, *args, **kwargs):
++        self.instance = kwargs.get('instance', None)
++        initial = kwargs.get('initial', {})
++
++        choices = []
++        if self.instance and self.instance.pk and 'itemvar' not in initial:
++            if self.instance.variation is not None:
++                initial['itemvar'] = f'{self.instance.item.pk}-{self.instance.variation.pk}'
++                if self.instance.variation.active is False:
++                    choices.append((initial['itemvar'], str(self.instance.variation)))
++            else:
++                initial['itemvar'] = self.instance.item.pk
++                if self.instance.item.active is False:
++                    choices.append((initial['itemvar'], str(self.instance)))
++
++        kwargs['initial'] = initial
++
+         super().__init__(*args, **kwargs)
+ 
+         if self.event.has_subevents:
+@@ -45,12 +72,73 @@ class WaitingListEntryTransferForm(I18nModelForm):
+                 }
+             )
+             self.fields['subevent'].widget.choices = self.fields['subevent'].choices
++        else:
++            del self.fields['subevent']
++
++        if self.event.settings.waiting_list_names_asked:
++            self.fields['name_parts'] = NamePartsFormField(
++                max_length=255,
++                required=self.event.settings.waiting_list_names_required,
++                scheme=self.event.organizer.settings.name_scheme,
++                titles=self.event.organizer.settings.name_scheme_titles,
++                label=_('Name'),
++            )
++        else:
++            del self.fields['name_parts']
++
++        if not self.event.settings.waiting_list_phones_asked:
++            del self.fields['phone']
++
++        items = self.event.items.filter(active=True).prefetch_related(
++            'variations'
++        )
++
++        for item in items:
++            if len(item.variations.all()) > 0:
++                for variation in item.variations.all():
++                    if variation.active:
++                        choices.append(
++                            ('{}-{}'.format(item.pk, variation.pk), '{} - {}'.format(str(item), str(variation)))
++                        )
++            else:
++                choices.append(('{}'.format(item.pk), str(item)))
++
++        self.fields['itemvar'].label = _("Product")
++        self.fields['itemvar'].help_text = _("Only includes active products.")
++        self.fields['itemvar'].required = True
++        self.fields['itemvar'].choices = choices
++
++    def clean(self):
++        cleaned_data = super().clean()
++
++        if self.instance.voucher is not None:
++            raise forms.ValidationError(_('A voucher for this waiting list entry was already sent out.'))
++
++        itemvar = cleaned_data.get('itemvar')
++        if itemvar:
++            self.instance.item = self.event.items.get(pk=itemvar.split('-')[0])
++            if '-' in itemvar:
++                self.instance.variation = self.instance.item.variations.get(pk=itemvar.split('-')[1])
++
++        if ((self.instance.item and not self.instance.item.active) or
++                (self.instance.variation and not self.instance.variation.active)):
++            self.add_error('itemvar', _('The selected product is not active.'))
++
++        return cleaned_data
+ 
+     class Meta:
+         model = WaitingListEntry
+         fields = [
++            'email',
++            'name_parts',
++            'phone',
+             'subevent',
+         ]
+         field_classes = {
+             'subevent': SafeModelChoiceField,
++            'email': forms.EmailField,
++            'phone': PhoneNumberField,
++        }
++        widgets = {
++            'phone': WrappedPhoneNumberPrefixWidget,
+         }
+diff --git a/src/pretix/control/templates/pretixcontrol/waitinglist/edit.html b/src/pretix/control/templates/pretixcontrol/waitinglist/edit.html
+new file mode 100644
+index 00000000..d4362f9c
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/waitinglist/edit.html
+@@ -0,0 +1,33 @@
++{% extends "pretixcontrol/event/base.html" %}
++{% load i18n %}
++{% load bootstrap3 %}
++{% block title %}{% trans "Edit entry" %}{% endblock %}
++{% block content %}
++    <h1>{% trans "Edit entry" %}</h1>
++    <form action="" method="post" class="form-horizontal">
++        {% csrf_token %}
++
++        {% if form.subevent %}
++            {% bootstrap_field form.subevent layout="control" %}
++        {% endif %}
++
++        {% bootstrap_field form.email layout="control" %}
++
++        {% if form.name_parts %}
++            {% bootstrap_field form.name_parts layout="control" %}
++        {% endif %}
++
++        {% if form.phone %}
++            {% bootstrap_field form.phone layout="control" %}
++        {% endif %}
++        {% bootstrap_field form.itemvar layout="control" %}
++        <div class="form-group submit-group">
++            <a href="{% url "control:event.orders.waitinglist" organizer=request.event.organizer.slug event=request.event.slug %}" class="btn btn-default btn-cancel">
++                {% trans "Cancel" %}
++            </a>
++            <button type="submit" class="btn btn-primary btn-save">
++                {% trans "Save" %}
++            </button>
++        </div>
++    </form>
++{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/waitinglist/index.html b/src/pretix/control/templates/pretixcontrol/waitinglist/index.html
+index 1539b2c9..42c4a903 100644
+--- a/src/pretix/control/templates/pretixcontrol/waitinglist/index.html
++++ b/src/pretix/control/templates/pretixcontrol/waitinglist/index.html
+@@ -124,6 +124,7 @@
+                 </option>
+             {% endfor %}
+         </select>
++        <input name="search" type="text" placeholder="{% trans "Search" %}" class="form-control" value="{{ request.GET.search }}">
+         {% if request.event.has_subevents %}
+             <select name="subevent" class="form-control">
+                 <option value="">{% trans "All dates" context "subevent" %}</option>
+@@ -267,13 +268,13 @@
+                                     data-toggle="tooltip" title="{% trans "Move to the end of the list" %}">
+                                     <span class="fa fa-thumbs-down"></span>
+                                 </button>
+-                                {% if request.event.has_subevents %}
+-                                    <a href="{% url "control:event.orders.waitinglist.transfer" organizer=request.event.organizer.slug event=request.event.slug entry=e.id %}"
+-                                       class="btn btn-default btn-sm" title="{% trans "Transfer to other date" context "subevent" %}"
+-                                        data-toggle="tooltip">
+-                                        <i class="fa fa-calendar" aria-hidden="true"></i>
+-                                    </a>
+-                                {% endif %}
++
++                                <a href="{% url "control:event.orders.waitinglist.edit" organizer=request.event.organizer.slug event=request.event.slug entry=e.id %}"
++                                   class="btn btn-default btn-sm" title="{% trans "Edit entry" %}"
++                                    data-toggle="tooltip">
++                                    <i class="fa fa-edit" aria-hidden="true"></i>
++                                </a>
++
+                                 <a href="{% url "control:event.orders.waitinglist.delete" organizer=request.event.organizer.slug event=request.event.slug entry=e.id %}?next={{ request.get_full_path|urlencode }}" class="btn btn-danger btn-sm"><i class="fa fa-trash"></i></a>
+                             {% else %}
+                                 <button class="btn btn-default btn-sm disabled">
+diff --git a/src/pretix/control/templates/pretixcontrol/waitinglist/transfer.html b/src/pretix/control/templates/pretixcontrol/waitinglist/transfer.html
+deleted file mode 100644
+index ac449831..00000000
+--- a/src/pretix/control/templates/pretixcontrol/waitinglist/transfer.html
++++ /dev/null
+@@ -1,23 +0,0 @@
+-{% extends "pretixcontrol/event/base.html" %}
+-{% load i18n %}
+-{% load bootstrap3 %}
+-{% block title %}{% trans "Transfer entry" %}{% endblock %}
+-{% block content %}
+-    <h1>{% trans "Transfer entry" %}</h1>
+-    <form action="" method="post" class="form-horizontal">
+-        {% csrf_token %}
+-        <p>{% blocktrans trimmed context "subevent" %}
+-            Please select the date to which the following waiting list entry should be
+-            transferred: <strong>{{ entry }}</strong>?
+-        {% endblocktrans %}</p>
+-        {% bootstrap_field form.subevent layout="control" %}
+-        <div class="form-group submit-group">
+-            <a href="{% url "control:event.orders.waitinglist" organizer=request.event.organizer.slug event=request.event.slug %}" class="btn btn-default btn-cancel">
+-                {% trans "Cancel" %}
+-            </a>
+-            <button type="submit" class="btn btn-primary btn-save">
+-                {% trans "Transfer" %}
+-            </button>
+-        </div>
+-    </form>
+-{% endblock %}
+diff --git a/src/pretix/control/urls.py b/src/pretix/control/urls.py
+index 9d92c908..35c659fd 100644
+--- a/src/pretix/control/urls.py
++++ b/src/pretix/control/urls.py
+@@ -480,8 +480,8 @@ urlpatterns = [
+         re_path(r'^waitinglist/auto_assign$', waitinglist.AutoAssign.as_view(), name='event.orders.waitinglist.auto'),
+         re_path(r'^waitinglist/(?P<entry>\d+)/delete$', waitinglist.EntryDelete.as_view(),
+                 name='event.orders.waitinglist.delete'),
+-        re_path(r'^waitinglist/(?P<entry>\d+)/transfer$', waitinglist.EntryTransfer.as_view(),
+-                name='event.orders.waitinglist.transfer'),
++        re_path(r'^waitinglist/(?P<entry>\d+)/edit$', waitinglist.EntryEdit.as_view(),
++                name='event.orders.waitinglist.edit'),
+         re_path(r'^checkins/$', checkin.CheckinListView.as_view(), name='event.orders.checkins'),
+         re_path(r'^checkinlists/$', checkin.CheckinListList.as_view(), name='event.orders.checkinlists'),
+         re_path(r'^checkinlists/add$', checkin.CheckinListCreate.as_view(), name='event.orders.checkinlists.add'),
+diff --git a/src/pretix/control/views/waitinglist.py b/src/pretix/control/views/waitinglist.py
+index 1cacbb3c..cbfd335b 100644
+--- a/src/pretix/control/views/waitinglist.py
++++ b/src/pretix/control/views/waitinglist.py
+@@ -53,7 +53,7 @@ from pretix.base.models import Item, LogEntry, Quota, WaitingListEntry
+ from pretix.base.models.waitinglist import WaitingListException
+ from pretix.base.services.waitinglist import assign_automatically
+ from pretix.base.views.tasks import AsyncAction
+-from pretix.control.forms.waitinglist import WaitingListEntryTransferForm
++from pretix.control.forms.waitinglist import WaitingListEntryEditForm
+ from pretix.control.permissions import EventPermissionRequiredMixin
+ from pretix.control.views import PaginationMixin
+ 
+@@ -138,6 +138,17 @@ class WaitingListQuerySetMixin:
+         elif force_filtered and '__ALL' not in self.request_data:
+             qs = qs.none()
+ 
++        if self.request_data.get("search", "") != "":
++            s = self.request_data.get("search", "")
++            search_q = Q(email__icontains=s)
++
++            if self.request.event.settings.waiting_list_names_asked:
++                search_q = search_q | Q(name_cached__icontains=s)
++            if self.request.event.settings.waiting_list_phones_asked:
++                search_q = search_q | Q(phone__icontains=s)
++
++            qs = qs.filter(search_q)
++
+         return qs
+ 
+ 
+@@ -238,7 +249,7 @@ class WaitingListView(EventPermissionRequiredMixin, WaitingListQuerySetMixin, Pa
+     def get_context_data(self, **kwargs):
+         ctx = super().get_context_data(**kwargs)
+         ctx['items'] = Item.objects.filter(event=self.request.event)
+-        ctx['filtered'] = ("status" in self.request.GET or "item" in self.request.GET)
++        ctx['filtered'] = any(param in self.request.GET for param in ("status", "item", "search"))
+ 
+         itemvar_cache = {}
+         quota_cache = {}
+@@ -390,25 +401,20 @@ class EntryDelete(EventPermissionRequiredMixin, CompatDeleteView):
+         })
+ 
+ 
+-class EntryTransfer(EventPermissionRequiredMixin, UpdateView):
++class EntryEdit(EventPermissionRequiredMixin, UpdateView):
+     model = WaitingListEntry
+-    template_name = 'pretixcontrol/waitinglist/transfer.html'
++    template_name = 'pretixcontrol/waitinglist/edit.html'
+     permission = 'can_change_orders'
+-    form_class = WaitingListEntryTransferForm
++    form_class = WaitingListEntryEditForm
+     context_object_name = 'entry'
+ 
+-    def dispatch(self, request, *args, **kwargs):
+-        if not self.request.event.has_subevents:
+-            raise Http404(_("This is not an event series."))
+-        return super().dispatch(request, *args, **kwargs)
+-
+     def get_object(self, queryset=None) -> WaitingListEntry:
+         return get_object_or_404(WaitingListEntry, pk=self.kwargs['entry'], event=self.request.event, voucher__isnull=True)
+ 
+     @transaction.atomic
+     def form_valid(self, form):
+-        messages.success(self.request, _('The waitinglist entry has been transferred.'))
+         if form.has_changed():
++            messages.success(self.request, _('The waitinglist entry has been changed.'))
+             self.object.log_action(
+                 'pretix.event.orders.waitinglist.changed', user=self.request.user, data={
+                     k: form.cleaned_data.get(k) for k in form.changed_data

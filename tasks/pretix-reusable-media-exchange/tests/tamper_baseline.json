@@ -1,0 +1,5 @@
+{
+  "src/pretix/base/models/_transactions.py": 1,
+  "src/pretix/base/models/event.py": 1,
+  "src/pretix/base/models/items.py": 1
+}

@@ -1,0 +1,21 @@
+{
+  "pr": 5647,
+  "sha": "5a1bcae0854bd671ffb9f25707616a8769bea339",
+  "base": "051eb7831216992cd078660d861b4289c21568b4",
+  "python": "3.11",
+  "slug": "pretix-vat-id-input",
+  "must_turn_green": 23,
+  "must_stay_green": 223,
+  "gold_src_files": [
+    "pyproject.toml",
+    "src/pretix/api/serializers/event.py",
+    "src/pretix/base/forms/questions.py",
+    "src/pretix/base/invoicing/pdf.py",
+    "src/pretix/base/services/tax.py",
+    "src/pretix/base/settings.py",
+    "src/pretix/base/views/js_helpers.py",
+    "src/pretix/control/forms/event.py",
+    "src/pretix/control/templates/pretixcontrol/event/invoicing.html",
+    "src/pretix/static/pretixbase/js/addressform.js"
+  ]
+}

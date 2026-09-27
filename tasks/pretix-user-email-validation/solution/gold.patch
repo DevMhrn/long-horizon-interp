@@ -1,0 +1,928 @@
+diff --git a/src/pretix/base/forms/auth.py b/src/pretix/base/forms/auth.py
+index dd44bb9a..79e5a0e7 100644
+--- a/src/pretix/base/forms/auth.py
++++ b/src/pretix/base/forms/auth.py
+@@ -214,21 +214,38 @@ class PasswordRecoverForm(forms.Form):
+     error_messages = {
+         'pw_mismatch': _("Please enter the same password twice"),
+     }
++    email = forms.EmailField(
++        max_length=255,
++        disabled=True,
++        label=_("Your email address"),
++        widget=forms.EmailInput(
++            attrs={'autocomplete': 'username'},
++        ),
++    )
+     password = forms.CharField(
+         label=_('Password'),
+-        widget=forms.PasswordInput,
++        widget=forms.PasswordInput(attrs={
++            'autocomplete': 'new-password',
++        }),
+         max_length=4096,
+         required=True
+     )
+     password_repeat = forms.CharField(
+         label=_('Repeat password'),
+-        widget=forms.PasswordInput,
++        widget=forms.PasswordInput(attrs={
++            'autocomplete': 'new-password',
++        }),
+         max_length=4096,
+     )
+ 
+     def __init__(self, user_id=None, *args, **kwargs):
+-        self.user_id = user_id
+-        super().__init__(*args, **kwargs)
++        initial = kwargs.pop('initial', {})
++        try:
++            self.user = User.objects.get(id=user_id)
++            initial['email'] = self.user.email
++        except User.DoesNotExist:
++            self.user = None
++        super().__init__(*args, initial=initial, **kwargs)
+ 
+     def clean(self):
+         password1 = self.cleaned_data.get('password', '')
+@@ -243,11 +260,7 @@ class PasswordRecoverForm(forms.Form):
+ 
+     def clean_password(self):
+         password1 = self.cleaned_data.get('password', '')
+-        try:
+-            user = User.objects.get(id=self.user_id)
+-        except User.DoesNotExist:
+-            user = None
+-        if validate_password(password1, user=user) is not None:
++        if validate_password(password1, user=self.user) is not None:
+             raise forms.ValidationError(_(password_validators_help_texts()), code='pw_invalid')
+         return password1
+ 
+@@ -307,3 +320,10 @@ class ReauthForm(forms.Form):
+                 self.error_messages['inactive'],
+                 code='inactive',
+             )
++
++
++class ConfirmationCodeForm(forms.Form):
++    code = forms.IntegerField(
++        label=_('Confirmation code'),
++        widget=forms.NumberInput(attrs={'class': 'confirmation-code-input', 'inputmode': 'numeric', 'type': 'text'}),
++    )
+diff --git a/src/pretix/base/forms/user.py b/src/pretix/base/forms/user.py
+index 10a90432..e3083322 100644
+--- a/src/pretix/base/forms/user.py
++++ b/src/pretix/base/forms/user.py
+@@ -39,37 +39,16 @@ from django.contrib.auth.password_validation import (
+     password_validators_help_texts, validate_password,
+ )
+ from django.db.models import Q
++from django.urls.base import reverse
+ from django.utils.translation import gettext_lazy as _
+ from pytz import common_timezones
+ 
+ from pretix.base.models import User
+ from pretix.control.forms import SingleLanguageWidget
++from pretix.helpers.format import format_map
+ 
+ 
+ class UserSettingsForm(forms.ModelForm):
+-    error_messages = {
+-        'duplicate_identifier': _("There already is an account associated with this email address. "
+-                                  "Please choose a different one."),
+-        'pw_current': _("Please enter your current password if you want to change your email address "
+-                        "or password."),
+-        'pw_current_wrong': _("The current password you entered was not correct."),
+-        'pw_mismatch': _("Please enter the same password twice"),
+-        'rate_limit': _("For security reasons, please wait 5 minutes before you try again."),
+-        'pw_equal': _("Please choose a password different to your current one.")
+-    }
+-
+-    old_pw = forms.CharField(max_length=255,
+-                             required=False,
+-                             label=_("Your current password"),
+-                             widget=forms.PasswordInput())
+-    new_pw = forms.CharField(max_length=255,
+-                             required=False,
+-                             label=_("New password"),
+-                             widget=forms.PasswordInput())
+-    new_pw_repeat = forms.CharField(max_length=255,
+-                                    required=False,
+-                                    label=_("Repeat new password"),
+-                                    widget=forms.PasswordInput())
+     timezone = forms.ChoiceField(
+         choices=((a, a) for a in common_timezones),
+         label=_("Default timezone"),
+@@ -93,11 +72,60 @@ class UserSettingsForm(forms.ModelForm):
+         self.user = kwargs.pop('user')
+         super().__init__(*args, **kwargs)
+         self.fields['email'].required = True
+-        if self.user.auth_backend != 'native':
+-            del self.fields['old_pw']
+-            del self.fields['new_pw']
+-            del self.fields['new_pw_repeat']
+-            self.fields['email'].disabled = True
++        self.fields['email'].disabled = True
++        self.fields['email'].help_text = format_map('<a href="{link}"><span class="fa fa-edit"></span> {text}</a>', {
++            'text': _("Change email address"),
++            'link': reverse('control:user.settings.email.change')
++        })
++
++
++class User2FADeviceAddForm(forms.Form):
++    name = forms.CharField(label=_('Device name'), max_length=64)
++    devicetype = forms.ChoiceField(label=_('Device type'), widget=forms.RadioSelect, choices=(
++        ('totp', _('Smartphone with the Authenticator application')),
++        ('webauthn', _('WebAuthn-compatible hardware token (e.g. Yubikey)')),
++    ))
++
++
++class UserPasswordChangeForm(forms.Form):
++    error_messages = {
++        'pw_current': _("Please enter your current password if you want to change your email address "
++                        "or password."),
++        'pw_current_wrong': _("The current password you entered was not correct."),
++        'pw_mismatch': _("Please enter the same password twice"),
++        'rate_limit': _("For security reasons, please wait 5 minutes before you try again."),
++        'pw_equal': _("Please choose a password different to your current one.")
++    }
++    email = forms.EmailField(max_length=255,
++                             disabled=True,
++                             label=_("Your email address"),
++                             widget=forms.EmailInput(
++                                 attrs={'autocomplete': 'username'},
++                             ))
++    old_pw = forms.CharField(max_length=255,
++                             required=False,
++                             label=_("Your current password"),
++                             widget=forms.PasswordInput(
++                                 attrs={'autocomplete': 'current-password'},
++                             ))
++    new_pw = forms.CharField(max_length=255,
++                             required=False,
++                             label=_("New password"),
++                             widget=forms.PasswordInput(
++                                 attrs={'autocomplete': 'new-password'},
++                             ))
++    new_pw_repeat = forms.CharField(max_length=255,
++                                    required=False,
++                                    label=_("Repeat new password"),
++                                    widget=forms.PasswordInput(
++                                        attrs={'autocomplete': 'new-password'},
++                                    ))
++
++    def __init__(self, *args, **kwargs):
++        self.user = kwargs.pop('user')
++        initial = kwargs.pop('initial', {})
++        initial['email'] = self.user.email
++        super().__init__(*args, initial=initial, **kwargs)
+ 
+     def clean_old_pw(self):
+         old_pw = self.cleaned_data.get('old_pw')
+@@ -121,15 +149,6 @@ class UserSettingsForm(forms.ModelForm):
+ 
+         return old_pw
+ 
+-    def clean_email(self):
+-        email = self.cleaned_data['email']
+-        if User.objects.filter(Q(email__iexact=email) & ~Q(pk=self.instance.pk)).exists():
+-            raise forms.ValidationError(
+-                self.error_messages['duplicate_identifier'],
+-                code='duplicate_identifier',
+-            )
+-        return email
+-
+     def clean_new_pw(self):
+         password1 = self.cleaned_data.get('new_pw', '')
+         if password1 and validate_password(password1, user=self.user) is not None:
+@@ -148,32 +167,24 @@ class UserSettingsForm(forms.ModelForm):
+                 code='pw_mismatch'
+             )
+ 
+-    def clean(self):
+-        password1 = self.cleaned_data.get('new_pw')
+-        email = self.cleaned_data.get('email')
+-        old_pw = self.cleaned_data.get('old_pw')
+ 
+-        if (password1 or email != self.user.email) and not old_pw:
+-            raise forms.ValidationError(
+-                self.error_messages['pw_current'],
+-                code='pw_current'
+-            )
++class UserEmailChangeForm(forms.Form):
++    error_messages = {
++        'duplicate_identifier': _("There already is an account associated with this email address. "
++                                  "Please choose a different one."),
++    }
++    old_email = forms.EmailField(label=_('Old email address'), disabled=True)
++    new_email = forms.EmailField(label=_('New email address'))
++
++    def __init__(self, *args, **kwargs):
++        self.user = kwargs.pop('user')
++        super().__init__(*args, **kwargs)
+ 
+-        if password1 and password1 == old_pw:
++    def clean_new_email(self):
++        email = self.cleaned_data['new_email']
++        if User.objects.filter(Q(email__iexact=email) & ~Q(pk=self.user.pk)).exists():
+             raise forms.ValidationError(
+-                self.error_messages['pw_equal'],
+-                code='pw_equal'
++                self.error_messages['duplicate_identifier'],
++                code='duplicate_identifier',
+             )
+-
+-        if password1:
+-            self.instance.set_password(password1)
+-
+-        return self.cleaned_data
+-
+-
+-class User2FADeviceAddForm(forms.Form):
+-    name = forms.CharField(label=_('Device name'), max_length=64)
+-    devicetype = forms.ChoiceField(label=_('Device type'), widget=forms.RadioSelect, choices=(
+-        ('totp', _('Smartphone with the Authenticator application')),
+-        ('webauthn', _('WebAuthn-compatible hardware token (e.g. Yubikey)')),
+-    ))
++        return email
+diff --git a/src/pretix/base/migrations/0294_user_is_verified.py b/src/pretix/base/migrations/0294_user_is_verified.py
+new file mode 100644
+index 00000000..5fe2c7a1
+--- /dev/null
++++ b/src/pretix/base/migrations/0294_user_is_verified.py
+@@ -0,0 +1,18 @@
++# Generated by Django 4.2.23 on 2025-09-04 16:06
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("pretixbase", "0293_cartposition_price_includes_rounding_correction_and_more"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="user",
++            name="is_verified",
++            field=models.BooleanField(default=False),
++        ),
++    ]
+diff --git a/src/pretix/base/models/auth.py b/src/pretix/base/models/auth.py
+index 31871dad..347f4d27 100644
+--- a/src/pretix/base/models/auth.py
++++ b/src/pretix/base/models/auth.py
+@@ -35,6 +35,7 @@
+ import binascii
+ import json
+ import operator
++import secrets
+ from datetime import timedelta
+ from functools import reduce
+ 
+@@ -44,6 +45,7 @@ from django.contrib.auth.models import (
+ )
+ from django.contrib.auth.tokens import default_token_generator
+ from django.contrib.contenttypes.models import ContentType
++from django.core.exceptions import BadRequest, PermissionDenied
+ from django.db import IntegrityError, models, transaction
+ from django.db.models import Q
+ from django.utils.crypto import get_random_string, salted_hmac
+@@ -239,9 +241,11 @@ class User(AbstractBaseUser, PermissionsMixin, LoggingMixin):
+ 
+     USERNAME_FIELD = 'email'
+     REQUIRED_FIELDS = []
++    MAX_CONFIRMATION_CODE_ATTEMPTS = 10
+ 
+     email = models.EmailField(unique=True, db_index=True, null=True, blank=True,
+                               verbose_name=_('Email'), max_length=190)
++    is_verified = models.BooleanField(default=False, verbose_name=_('Verified email address'))
+     fullname = models.CharField(max_length=255, blank=True, null=True,
+                                 verbose_name=_('Full name'))
+     is_active = models.BooleanField(default=True,
+@@ -353,6 +357,77 @@ class User(AbstractBaseUser, PermissionsMixin, LoggingMixin):
+         except SendMailException:
+             pass  # Already logged
+ 
++    def send_confirmation_code(self, session, reason, email=None, state=None):
++        """
++        Sends a confirmation code via email to the user. The code is only valid for the action specified by `reason`.
++        The email is either sent to the email address currently on file for the user, or to the one given in the optional `email` parameter.
++        A `state` value can be provided which is bound to this confirmation code, and returned on successfully checking the code.
++        :param session: the user's request session
++        :param reason: the action which should be confirmed using this confirmation code (currently, only `email_change` is allowed)
++        :param email: optional, the email address to send the confirmation code to
++        :param state: optional
++        """
++        from pretix.base.services.mail import mail
++
++        with language(self.locale):
++            if reason == 'email_change':
++                msg = str(_('to confirm changing your email address from {old_email}\nto {new_email}, use the following code:').format(
++                    old_email=self.email, new_email=email,
++                ))
++            elif reason == 'email_verify':
++                msg = str(_('to confirm that your email address {email} belongs to your pretix account, use the following code:').format(
++                    email=self.email,
++                ))
++            else:
++                raise Exception('Invalid confirmation code reason')
++
++        code = "%07d" % secrets.SystemRandom().randint(0, 9999999)
++        session['user_confirmation_code:' + reason] = {
++            'code': code,
++            'state': state,
++            'attempts': 0,
++        }
++        mail(
++            email or self.email,
++            _('pretix confirmation code'),
++            'pretixcontrol/email/confirmation_code.txt',
++            {
++                'user': self,
++                'reason': msg,
++                'code': code,
++            },
++            event=None,
++            user=self,
++            locale=self.locale
++        )
++
++    def check_confirmation_code(self, session, reason, code):
++        """
++        Checks a confirmation code entered by the user against the valid code stored in the session.
++        If the code is correct, an optional state bound to the code is returned.
++        If the code is incorrect, PermissionDenied is raised. If the code could not be validated, either because no
++        code for the given reason is stored, or the number of input attempts is exceeded, BadRequest is raised.
++
++        :param session: the user's request session
++        :param reason: the action which should be confirmed using this confirmation code
++        :param code: the code entered by the user
++        :return: optional state bound to this code using the state parameter of send_confirmation_code, None otherwise
++        """
++        stored = session.get('user_confirmation_code:' + reason)
++        if not stored:
++            raise BadRequest
++
++        if stored['attempts'] > User.MAX_CONFIRMATION_CODE_ATTEMPTS:
++            raise BadRequest
++
++        if int(stored['code']) == int(code):
++            del session['user_confirmation_code:' + reason]
++            return stored['state']
++        else:
++            stored['attempts'] += 1
++            session['user_confirmation_code:' + reason] = stored
++            raise PermissionDenied
++
+     def send_password_reset(self):
+         from pretix.base.services.mail import mail
+ 
+diff --git a/src/pretix/control/forms/users.py b/src/pretix/control/forms/users.py
+index 7f813a13..27dd3d6d 100644
+--- a/src/pretix/control/forms/users.py
++++ b/src/pretix/control/forms/users.py
+@@ -69,6 +69,7 @@ class UserEditForm(forms.ModelForm):
+             'email',
+             'require_2fa',
+             'is_active',
++            'is_verified',
+             'is_staff',
+             'needs_password_change',
+             'last_login'
+diff --git a/src/pretix/control/logdisplay.py b/src/pretix/control/logdisplay.py
+index 48fdfa8c..6c4a5611 100644
+--- a/src/pretix/control/logdisplay.py
++++ b/src/pretix/control/logdisplay.py
+@@ -667,6 +667,14 @@ class UserSettingsChangedLogEntryType(LogEntryType):
+         return text
+ 
+ 
++@log_entry_types.new_from_dict({
++    'pretix.user.email.changed': _('Your email address has been changed from {old_email} to {email}.'),
++    'pretix.user.email.confirmed': _('Your email address {email} has been confirmed.'),
++})
++class UserEmailChangedLogEntryType(LogEntryType):
++    pass
++
++
+ class UserImpersonatedLogEntryType(LogEntryType):
+     def display(self, logentry, data):
+         return self.plain.format(data['other_email'])
+diff --git a/src/pretix/control/middleware.py b/src/pretix/control/middleware.py
+index 9694e88d..9b021526 100644
+--- a/src/pretix/control/middleware.py
++++ b/src/pretix/control/middleware.py
+@@ -72,7 +72,7 @@ class PermissionMiddleware:
+     )
+ 
+     EXCEPTIONS_FORCED_PW_CHANGE = (
+-        "user.settings",
++        "user.settings.password.change",
+         "auth.logout"
+     )
+ 
+@@ -139,7 +139,7 @@ class PermissionMiddleware:
+                 return redirect_to_url(reverse('control:user.reauth') + '?next=' + quote(request.get_full_path()))
+         except SessionPasswordChangeRequired:
+             if url_name not in self.EXCEPTIONS_FORCED_PW_CHANGE:
+-                return redirect_to_url(reverse('control:user.settings') + '?next=' + quote(request.get_full_path()))
++                return redirect_to_url(reverse('control:user.settings.password.change') + '?next=' + quote(request.get_full_path()))
+         except Session2FASetupRequired:
+             if url_name not in self.EXCEPTIONS_2FA:
+                 return redirect_to_url(reverse('control:user.settings.2fa'))
+diff --git a/src/pretix/control/templates/pretixcontrol/auth/recover.html b/src/pretix/control/templates/pretixcontrol/auth/recover.html
+index 1caf0903..a99bd6f7 100644
+--- a/src/pretix/control/templates/pretixcontrol/auth/recover.html
++++ b/src/pretix/control/templates/pretixcontrol/auth/recover.html
+@@ -7,6 +7,7 @@
+         <h3>{% trans "Set new password" %}</h3>
+         {% csrf_token %}
+         {% bootstrap_form_errors form type='all' layout='inline' %}
++        {% bootstrap_field form.email %}
+         {% bootstrap_field form.password %}
+         {% bootstrap_field form.password_repeat %}
+ 		<div class="form-group buttons">
+diff --git a/src/pretix/control/templates/pretixcontrol/email/confirmation_code.txt b/src/pretix/control/templates/pretixcontrol/email/confirmation_code.txt
+new file mode 100644
+index 00000000..5ac75436
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/email/confirmation_code.txt
+@@ -0,0 +1,13 @@
++{% load i18n %}{% blocktrans with url=url|safe messages=messages|safe %}Hello,
++
++{{ reason }}
++
++    {{ code }}
++
++Please do never give this code to another person. Our support team will never ask for this code.
++
++If this code was not requested by you, please contact us immediately.
++
++Best regards,
++Your pretix team
++{% endblocktrans %}
+diff --git a/src/pretix/control/templates/pretixcontrol/user/change_email.html b/src/pretix/control/templates/pretixcontrol/user/change_email.html
+new file mode 100644
+index 00000000..1d6e5670
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/user/change_email.html
+@@ -0,0 +1,29 @@
++{% extends "pretixcontrol/base.html" %}
++{% load i18n %}
++{% load bootstrap3 %}
++{% block title %}{% trans "Change login email address" %}{% endblock %}
++{% block content %}
++    <form action="" method="post" class="form centered-form">
++        <h1>
++            {% trans "Change login email address" %}
++        </h1>
++        {% csrf_token %}
++        {% bootstrap_form_errors form %}
++        <p class="text-muted">
++            {% trans "This changes the email address used to login to your account, as well as where we send email notifications." %}
++        </p>
++        {% bootstrap_field form.old_email %}
++        {% bootstrap_field form.new_email %}
++        <p>
++            {% trans "We will send a confirmation code to your new email address, which you need to enter in the next step to confirm the email address is correct." %}
++        </p>
++        <div class="form-group submit-group">
++            <a href="{% url "control:user.settings" %}" class="btn btn-default btn-cancel">
++                {% trans "Cancel" %}
++            </a>
++            <button type="submit" class="btn btn-primary btn-save btn-lg">
++                {% trans "Continue" %}
++            </button>
++        </div>
++    </form>
++{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/user/change_password.html b/src/pretix/control/templates/pretixcontrol/user/change_password.html
+new file mode 100644
+index 00000000..cdfe5bc5
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/user/change_password.html
+@@ -0,0 +1,24 @@
++{% extends "pretixcontrol/base.html" %}
++{% load i18n %}
++{% load bootstrap3 %}
++{% block title %}{% trans "Change password" %}{% endblock %}
++{% block content %}
++    <form action="" method="post" class="form centered-form">
++        <h1>
++            {% trans "Change password" %}
++        </h1>
++        <br>
++        {% csrf_token %}
++        {% bootstrap_form_errors form %}
++        {% bootstrap_field form.email %}
++        {% bootstrap_field form.old_pw %}
++        {% bootstrap_field form.new_pw %}
++        {% bootstrap_field form.new_pw_repeat %}
++        <div class="form-group submit-group">
++            <a href="{% url "control:user.settings" %}" class="btn btn-default btn-cancel">{% trans "Cancel" %}</a>
++            <button type="submit" class="btn btn-primary btn-save btn-lg">
++                {% trans "Change password" %}
++            </button>
++        </div>
++    </form>
++{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/user/confirmation_code_dialog.html b/src/pretix/control/templates/pretixcontrol/user/confirmation_code_dialog.html
+new file mode 100644
+index 00000000..58bb2f65
+--- /dev/null
++++ b/src/pretix/control/templates/pretixcontrol/user/confirmation_code_dialog.html
+@@ -0,0 +1,21 @@
++{% extends "pretixcontrol/base.html" %}
++{% load i18n %}
++{% load bootstrap3 %}
++{% block title %}{% trans "Enter confirmation code" %}{% endblock %}
++{% block content %}
++    <form action="" method="post" class="form centered-form">
++        <h1>
++            {% trans "Enter confirmation code" %}
++        </h1>
++        {% csrf_token %}
++        {% bootstrap_form_errors form type='all' layout='inline' %}
++        <p>{{ message }}</p>
++        {% bootstrap_field form.code %}
++        <div class="form-group submit-group">
++            <a href="{{ cancel_url }}" class="btn btn-default btn-cancel">{% trans "Cancel" %}</a>
++            <button type="submit" class="btn btn-primary btn-save btn-lg">
++                {% trans "Continue" %}
++            </button>
++        </div>
++    </form>
++{% endblock %}
+diff --git a/src/pretix/control/templates/pretixcontrol/user/settings.html b/src/pretix/control/templates/pretixcontrol/user/settings.html
+index 139bfcbd..0a4c4701 100644
+--- a/src/pretix/control/templates/pretixcontrol/user/settings.html
++++ b/src/pretix/control/templates/pretixcontrol/user/settings.html
+@@ -3,8 +3,26 @@
+ {% load bootstrap3 %}
+ {% block title %}{% trans "Account settings" %}{% endblock %}
+ {% block content %}
++{% if not user.is_verified %}
++    <div class="alert alert-info">
++        <p>
++            {% blocktrans trimmed %}
++            Your email address is not confirmed yet. To secure your account, please confirm your email address using
++            a confirmation code we will send to your email address.
++            {% endblocktrans %}
++        </p>
++        <p>
++            <form action="{% url "control:user.settings.email.send_verification_code" %}" method="post" class="form-horizontal">
++                {% csrf_token %}
++                <button type="submit" class="btn btn-primary">
++                    {% trans "Send confirmation email" %}
++                </button>
++            </form>
++        </p>
++    </div>
++{% endif %}
+ <h1>{% trans "Account settings" %}</h1>
+-<form action="" method="post" class="form-horizontal">
++<form action="" method="post" class="form-horizontal" data-testid="usersettingsform">
+     {% csrf_token %}
+     {% bootstrap_form_errors form %}
+     <fieldset>
+@@ -13,7 +31,7 @@
+         {% bootstrap_field form.locale layout='horizontal' %}
+         {% bootstrap_field form.timezone layout='horizontal' %}
+         <div class="form-group">
+-            <label class="col-md-3 control-label" for="id_new_pw_repeat">{% trans "Notifications" %}</label>
++            <label class="col-md-3 control-label">{% trans "Notifications" %}</label>
+             <div class="col-md-9 static-form-row">
+                 {% if request.user.notifications_send and request.user.notification_settings.exists %}
+                     <span class="label label-success">
+@@ -41,8 +59,18 @@
+             {% bootstrap_field form.new_pw layout='horizontal' %}
+             {% bootstrap_field form.new_pw_repeat layout='horizontal' %}
+         {% endif %}
++        {% if user.auth_backend == 'native' %}
++            <div class="form-group">
++                <label class="col-md-3 control-label">{% trans "Password" %}</label>
++                <div class="col-md-9 static-form-row">
++                    <a href="{% url "control:user.settings.password.change" %}">
++                        <span class="fa fa-edit"></span> {% trans "Change password" %}
++                    </a>
++                </div>
++            </div>
++        {% endif %}
+         <div class="form-group">
+-            <label class="col-md-3 control-label" for="id_new_pw_repeat">{% trans "Two-factor authentication" %}</label>
++            <label class="col-md-3 control-label">{% trans "Two-factor authentication" %}</label>
+             <div class="col-md-9 static-form-row">
+                 {% if user.require_2fa %}
+                     <span class="label label-success">{% trans "Enabled" %}</span> &nbsp;
+@@ -58,7 +86,7 @@
+             </div>
+         </div>
+         <div class="form-group">
+-            <label class="col-md-3 control-label" for="">{% trans "Authorized applications" %}</label>
++            <label class="col-md-3 control-label">{% trans "Authorized applications" %}</label>
+             <div class="col-md-9 static-form-row">
+                 <a href="{% url "control:user.settings.oauth.list" %}">
+                     <span class="fa fa-plug"></span>
+@@ -67,7 +95,7 @@
+             </div>
+         </div>
+         <div class="form-group">
+-            <label class="col-md-3 control-label" for="">{% trans "Account history" %}</label>
++            <label class="col-md-3 control-label">{% trans "Account history" %}</label>
+             <div class="col-md-9 static-form-row">
+                 <a href="{% url "control:user.settings.history" %}">
+                     <span class="fa fa-history"></span>
+diff --git a/src/pretix/control/templates/pretixcontrol/users/form.html b/src/pretix/control/templates/pretixcontrol/users/form.html
+index 6e0443b1..1f846bf8 100644
+--- a/src/pretix/control/templates/pretixcontrol/users/form.html
++++ b/src/pretix/control/templates/pretixcontrol/users/form.html
+@@ -56,6 +56,7 @@
+                     {% if form.new_pw %}
+                         {% bootstrap_field form.new_pw layout='control' %}
+                         {% bootstrap_field form.new_pw_repeat layout='control' %}
++                        {% bootstrap_field form.is_verified layout='control' %}
+                     {% endif %}
+                     {% bootstrap_field form.last_login layout='control' %}
+                     {% bootstrap_field form.require_2fa layout='control' %}
+diff --git a/src/pretix/control/urls.py b/src/pretix/control/urls.py
+index 04296c37..8150aa52 100644
+--- a/src/pretix/control/urls.py
++++ b/src/pretix/control/urls.py
+@@ -110,6 +110,10 @@ urlpatterns = [
+             name='user.settings.2fa.confirm.webauthn'),
+     re_path(r'^settings/2fa/(?P<devicetype>[^/]+)/(?P<device>[0-9]+)/delete', user.User2FADeviceDeleteView.as_view(),
+             name='user.settings.2fa.delete'),
++    re_path(r'^settings/email/confirm$', user.UserEmailConfirmView.as_view(), name='user.settings.email.confirm'),
++    re_path(r'^settings/email/change$', user.UserEmailChangeView.as_view(), name='user.settings.email.change'),
++    re_path(r'^settings/email/verify', user.UserEmailVerifyView.as_view(), name='user.settings.email.send_verification_code'),
++    re_path(r'^settings/password/change$', user.UserPasswordChangeView.as_view(), name='user.settings.password.change'),
+     re_path(r'^organizers/$', organizer.OrganizerList.as_view(), name='organizers'),
+     re_path(r'^organizers/add$', organizer.OrganizerCreate.as_view(), name='organizers.add'),
+     re_path(r'^organizers/select2$', typeahead.organizer_select2, name='organizers.select2'),
+diff --git a/src/pretix/control/views/user.py b/src/pretix/control/views/user.py
+index 2f325f13..89364f1f 100644
+--- a/src/pretix/control/views/user.py
++++ b/src/pretix/control/views/user.py
+@@ -44,11 +44,13 @@ from django.conf import settings
+ from django.contrib import messages
+ from django.contrib.auth import update_session_auth_hash
+ from django.contrib.contenttypes.models import ContentType
++from django.core.exceptions import BadRequest, PermissionDenied
+ from django.db import transaction
+ from django.shortcuts import get_object_or_404, redirect
+ from django.urls import reverse
+ from django.utils.crypto import get_random_string
+ from django.utils.functional import cached_property
++from django.utils.html import format_html
+ from django.utils.http import url_has_allowed_host_and_scheme
+ from django.utils.timezone import now
+ from django.utils.translation import gettext_lazy as _
+@@ -60,8 +62,11 @@ from django_scopes import scopes_disabled
+ from webauthn.helpers import generate_challenge, generate_user_handle
+ 
+ from pretix.base.auth import get_auth_backends
+-from pretix.base.forms.auth import ReauthForm
+-from pretix.base.forms.user import User2FADeviceAddForm, UserSettingsForm
++from pretix.base.forms.auth import ConfirmationCodeForm, ReauthForm
++from pretix.base.forms.user import (
++    User2FADeviceAddForm, UserEmailChangeForm, UserPasswordChangeForm,
++    UserSettingsForm,
++)
+ from pretix.base.models import (
+     Event, LogEntry, NotificationSetting, U2FDevice, User, WebAuthnDevice,
+ )
+@@ -237,25 +242,7 @@ class UserSettings(UpdateView):
+ 
+         data = {}
+         for k in form.changed_data:
+-            if k not in ('old_pw', 'new_pw_repeat'):
+-                if 'new_pw' == k:
+-                    data['new_pw'] = True
+-                else:
+-                    data[k] = form.cleaned_data[k]
+-
+-        msgs = []
+-
+-        if 'new_pw' in form.changed_data:
+-            self.request.user.needs_password_change = False
+-            msgs.append(_('Your password has been changed.'))
+-
+-        if 'email' in form.changed_data:
+-            msgs.append(_('Your email address has been changed to {email}.').format(email=form.cleaned_data['email']))
+-
+-        if msgs:
+-            self.request.user.send_security_notice(msgs, email=form.cleaned_data['email'])
+-            if self._old_email != form.cleaned_data['email']:
+-                self.request.user.send_security_notice(msgs, email=self._old_email)
++            data[k] = form.cleaned_data[k]
+ 
+         sup = super().form_valid(form)
+         self.request.user.log_action('pretix.user.settings.changed', user=self.request.user, data=data)
+@@ -834,3 +821,159 @@ class EditStaffSession(StaffMemberRequiredMixin, UpdateView):
+             return get_object_or_404(StaffSession, pk=self.kwargs['id'])
+         else:
+             return get_object_or_404(StaffSession, pk=self.kwargs['id'], user=self.request.user)
++
++
++class UserPasswordChangeView(FormView):
++    max_time = 300
++
++    form_class = UserPasswordChangeForm
++    template_name = 'pretixcontrol/user/change_password.html'
++
++    def get_form_kwargs(self):
++        if self.request.user.auth_backend != 'native':
++            raise PermissionDenied
++
++        return {
++            **super().get_form_kwargs(),
++            "user": self.request.user,
++        }
++
++    def form_valid(self, form):
++        with transaction.atomic():
++            self.request.user.set_password(form.cleaned_data['new_pw'])
++            self.request.user.needs_password_change = False
++            self.request.user.save()
++            msgs = []
++            msgs.append(_('Your password has been changed.'))
++            self.request.user.send_security_notice(msgs)
++
++            self.request.user.log_action('pretix.user.settings.changed', user=self.request.user, data={'new_pw': True})
++
++            update_session_auth_hash(self.request, self.request.user)
++
++        messages.success(self.request, _('Your changes have been saved.'))
++        return redirect(self.get_success_url())
++
++    def form_invalid(self, form):
++        messages.error(self.request, _('We could not save your changes. See below for details.'))
++        return super().form_invalid(form)
++
++    def get_success_url(self):
++        if "next" in self.request.GET and url_has_allowed_host_and_scheme(self.request.GET.get("next"), allowed_hosts=None):
++            return self.request.GET.get("next")
++        return reverse('control:user.settings')
++
++
++class UserEmailChangeView(RecentAuthenticationRequiredMixin, FormView):
++    max_time = 300
++
++    form_class = UserEmailChangeForm
++    template_name = 'pretixcontrol/user/change_email.html'
++
++    def get_form_kwargs(self):
++        if self.request.user.auth_backend != 'native':
++            raise PermissionDenied
++
++        return {
++            **super().get_form_kwargs(),
++            "user": self.request.user,
++        }
++
++    def get_initial(self):
++        return {
++            "old_email": self.request.user.email
++        }
++
++    def form_valid(self, form):
++        self.request.user.send_confirmation_code(
++            session=self.request.session,
++            reason='email_change',
++            email=form.cleaned_data['new_email'],
++            state=form.cleaned_data['new_email'],
++        )
++        self.request.session['email_confirmation_destination'] = form.cleaned_data['new_email']
++        return redirect(reverse('control:user.settings.email.confirm', kwargs={}) + '?reason=email_change')
++
++    def form_invalid(self, form):
++        messages.error(self.request, _('We could not save your changes. See below for details.'))
++        return super().form_invalid(form)
++
++
++class UserEmailVerifyView(View):
++    def post(self, request, *args, **kwargs):
++        if self.request.user.is_verified:
++            messages.success(self.request, _('Your email address was already verified.'))
++            return redirect(reverse('control:user.settings', kwargs={}))
++
++        self.request.user.send_confirmation_code(
++            session=self.request.session,
++            reason='email_verify',
++            email=self.request.user.email,
++            state=self.request.user.email,
++        )
++        self.request.session['email_confirmation_destination'] = self.request.user.email
++        return redirect(reverse('control:user.settings.email.confirm', kwargs={}) + '?reason=email_verify')
++
++
++class UserEmailConfirmView(FormView):
++    form_class = ConfirmationCodeForm
++    template_name = 'pretixcontrol/user/confirmation_code_dialog.html'
++
++    def get_context_data(self, **kwargs):
++        return {
++            **super().get_context_data(**kwargs),
++            "cancel_url": reverse('control:user.settings', kwargs={}),
++            "message": format_html(
++                _("Please enter the confirmation code we sent to your email address <strong>{email}</strong>."),
++                email=self.request.session.get('email_confirmation_destination', ''),
++            ),
++        }
++
++    @transaction.atomic()
++    def form_valid(self, form):
++        reason = self.request.GET['reason']
++        if reason not in ('email_change', 'email_verify'):
++            raise PermissionDenied
++        try:
++            new_email = self.request.user.check_confirmation_code(
++                session=self.request.session,
++                reason=reason,
++                code=form.cleaned_data['code'],
++            )
++        except PermissionDenied:
++            return self.form_invalid(form)
++        except BadRequest:
++            messages.error(self.request, _(
++                'We were unable to verify your confirmation code. Please try again.'
++            ))
++            return redirect(reverse('control:user.settings', kwargs={}))
++
++        log_data = {
++            'email': new_email,
++            'email_verified': True,
++        }
++        if reason == 'email_change':
++            msgs = []
++            msgs.append(_('Your email address has been changed to {email}.').format(email=new_email))
++            log_data['old_email'] = old_email = self.request.user.email
++            self.request.user.send_security_notice(msgs, email=old_email)
++            self.request.user.send_security_notice(msgs, email=new_email)
++            log_action = 'pretix.user.email.changed'
++        else:
++            log_action = 'pretix.user.email.confirmed'
++
++        self.request.user.email = new_email
++        self.request.user.is_verified = True
++        self.request.user.save()
++        self.request.user.log_action(log_action, user=self.request.user, data=log_data)
++        update_session_auth_hash(self.request, self.request.user)
++
++        if reason == 'email_change':
++            messages.success(self.request, _('Your email address has been changed successfully.'))
++        else:
++            messages.success(self.request, _('Your email address has been confirmed successfully.'))
++        return redirect(reverse('control:user.settings', kwargs={}))
++
++    def form_invalid(self, form):
++        messages.error(self.request, _('The entered confirmation code is not correct. Please try again.'))
++        return super().form_invalid(form)
+diff --git a/src/pretix/static/pretixbase/scss/_theme.scss b/src/pretix/static/pretixbase/scss/_theme.scss
+index 3a5423d4..eb32d06e 100644
+--- a/src/pretix/static/pretixbase/scss/_theme.scss
++++ b/src/pretix/static/pretixbase/scss/_theme.scss
+@@ -263,3 +263,11 @@ svg.svg-icon {
+ @include table-row-variant('warning', var(--pretix-brand-warning-lighten-40), var(--pretix-brand-warning-lighten-35));
+ @include table-row-variant('danger', var(--pretix-brand-danger-lighten-30), var(--pretix-brand-danger-lighten-25));
+ 
++.confirmation-code-input {
++  font-size: 200%;
++  font-family: monospace;
++  font-stretch: expanded;
++  text-align: center;
++  height: 50px;
++  margin: 10px 0;
++}
+diff --git a/src/pretix/static/pretixcontrol/scss/_forms.scss b/src/pretix/static/pretixcontrol/scss/_forms.scss
+index f6f2d55f..a80c9d51 100644
+--- a/src/pretix/static/pretixcontrol/scss/_forms.scss
++++ b/src/pretix/static/pretixcontrol/scss/_forms.scss
+@@ -938,3 +938,25 @@ details {
+     }
+   }
+ }
++
++
++@media (min-width: $screen-lg-min) {
++  .centered-form {
++    margin: 80px auto;
++    max-width: 800px;
++    border: 1px solid #ddd;
++    padding: 20px 40px 0;
++    border-radius: 4px;
++    box-shadow: 2px 2px 2px #eee;
++  }
++
++  .form.centered-form .submit-group {
++    margin: 25px -40px 0 !important;
++    padding-right: 40px;
++    padding-left: 40px;
++  }
++
++  .centered-form p {
++    margin: 20px 0;
++  }
++}

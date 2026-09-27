@@ -1,0 +1,4 @@
+[
+  "tests.base.test_cancelevent.EventCancelTests::test_cancel_send_mail_attendees",
+  "tests.base.test_cancelevent.SubEventCancelTests::test_cancel_send_mail_waitinglist"
+]

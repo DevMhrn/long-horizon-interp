@@ -1,0 +1,17 @@
+{
+  "pr": 6160,
+  "sha": "7fe31634e62baf62584570fc04097209d7b1e0d4",
+  "base": "f25c233e919b8fb3a8ddf88a4e387bd9aebd58a9",
+  "python": "3.13",
+  "slug": "pretix-relative-dates-from-order",
+  "must_turn_green": 34,
+  "must_stay_green": 798,
+  "gold_src_files": [
+    "src/pretix/base/forms/widgets.py",
+    "src/pretix/base/reldate.py",
+    "src/pretix/control/forms/subevents.py",
+    "src/pretix/control/templates/pretixcontrol/base.html",
+    "src/pretix/control/views/subevents.py",
+    "src/pretix/static/pretixbase/js/reldate.js"
+  ]
+}

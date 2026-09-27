@@ -1,0 +1,521 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 4d89864e..cde14113 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -99,7 +99,6 @@ dependencies = [
+   "tlds>=2020041600",
+   "tqdm==4.*",
+   "ua-parser==1.0.*",
+-  "vat_moss_forked==2020.3.20.0.11.0",
+   "vobject==0.9.*",
+   "webauthn==2.7.*",
+   "zeep==4.3.*"
+diff --git a/src/pretix/api/serializers/event.py b/src/pretix/api/serializers/event.py
+index 1f1c40cf..325e24c7 100644
+--- a/src/pretix/api/serializers/event.py
++++ b/src/pretix/api/serializers/event.py
+@@ -795,6 +795,7 @@ class EventSettingsSerializer(SettingsSerializer):
+         'invoice_address_asked',
+         'invoice_address_required',
+         'invoice_address_vatid',
++        'invoice_address_vatid_required_countries',
+         'invoice_address_company_required',
+         'invoice_address_beneficiary',
+         'invoice_address_custom_field',
+@@ -943,6 +944,7 @@ class DeviceEventSettingsSerializer(EventSettingsSerializer):
+         'invoice_address_asked',
+         'invoice_address_required',
+         'invoice_address_vatid',
++        'invoice_address_vatid_required_countries',
+         'invoice_address_company_required',
+         'invoice_address_beneficiary',
+         'invoice_address_custom_field',
+diff --git a/src/pretix/base/forms/questions.py b/src/pretix/base/forms/questions.py
+index bb56ceb9..7d810e3e 100644
+--- a/src/pretix/base/forms/questions.py
++++ b/src/pretix/base/forms/questions.py
+@@ -83,7 +83,7 @@ from pretix.base.invoicing.transmission import (
+ from pretix.base.models import InvoiceAddress, Item, Question, QuestionOption
+ from pretix.base.models.tax import ask_for_vat_id
+ from pretix.base.services.tax import (
+-    VATIDFinalError, VATIDTemporaryError, validate_vat_id,
++    VATIDFinalError, VATIDTemporaryError, normalize_vat_id, validate_vat_id,
+ )
+ from pretix.base.settings import (
+     COUNTRIES_WITH_STATE_IN_ADDRESS, COUNTRY_STATE_LABEL,
+@@ -1165,13 +1165,11 @@ class BaseInvoiceAddressForm(forms.ModelForm):
+             self.fields['vat_id'].help_text = '<br/>'.join([
+                 str(_('Optional, but depending on the country you reside in we might need to charge you '
+                       'additional taxes if you do not enter it.')),
+-                str(_('If you are registered in Switzerland, you can enter your UID instead.')),
+             ])
+         else:
+             self.fields['vat_id'].help_text = '<br/>'.join([
+                 str(_('Optional, but it might be required for you to claim tax benefits on your invoice '
+                       'depending on your and the seller’s country of residence.')),
+-                str(_('If you are registered in Switzerland, you can enter your UID instead.')),
+             ])
+ 
+         transmission_type_choices = [
+@@ -1358,13 +1356,24 @@ class BaseInvoiceAddressForm(forms.ModelForm):
+                                             "transmission method.")}
+                 )
+ 
++        vat_id_applicable = (
++            'vat_id' in self.fields and
++            data.get('is_business') and
++            ask_for_vat_id(data.get('country'))
++        )
++        vat_id_required = vat_id_applicable and str(data.get('country')) in self.event.settings.invoice_address_vatid_required_countries
++        if vat_id_required and not data.get('vat_id'):
++            raise ValidationError({
++                "vat_id": _("This field is required.")
++            })
++
+         if self.validate_vat_id and self.instance.vat_id_validated and 'vat_id' not in self.changed_data:
+-            pass
+-        elif self.validate_vat_id and data.get('is_business') and ask_for_vat_id(data.get('country')) and data.get('vat_id'):
++            pass  # Skip re-validation if it is validated
++        elif self.validate_vat_id and vat_id_applicable:
+             try:
+                 normalized_id = validate_vat_id(data.get('vat_id'), str(data.get('country')))
+                 self.instance.vat_id_validated = True
+-                self.instance.vat_id = normalized_id
++                self.instance.vat_id = data['vat_id'] = normalized_id
+             except VATIDFinalError as e:
+                 if self.all_optional:
+                     self.instance.vat_id_validated = False
+@@ -1372,6 +1381,9 @@ class BaseInvoiceAddressForm(forms.ModelForm):
+                 else:
+                     raise ValidationError({"vat_id": e.message})
+             except VATIDTemporaryError as e:
++                # We couldn't check it online, but we can still normalize it
++                normalized_id = normalize_vat_id(data.get('vat_id'), str(data.get('country')))
++                self.instance.vat_id = data['vat_id'] = normalized_id
+                 self.instance.vat_id_validated = False
+                 if self.request and self.vat_warning:
+                     messages.warning(self.request, e.message)
+diff --git a/src/pretix/base/invoicing/pdf.py b/src/pretix/base/invoicing/pdf.py
+index a97d7137..af9d3f0f 100644
+--- a/src/pretix/base/invoicing/pdf.py
++++ b/src/pretix/base/invoicing/pdf.py
+@@ -32,7 +32,6 @@ from itertools import groupby
+ from typing import Tuple
+ 
+ import bleach
+-import vat_moss.exchange_rates
+ from bidi import get_display
+ from django.contrib.staticfiles import finders
+ from django.db.models import Sum
+@@ -1059,7 +1058,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
+ 
+         def fmt(val):
+             try:
+-                return vat_moss.exchange_rates.format(val, self.invoice.foreign_currency_display)
++                return money_filter(val, self.invoice.foreign_currency_display)
+             except ValueError:
+                 return localize(val) + ' ' + self.invoice.foreign_currency_display
+ 
+diff --git a/src/pretix/base/services/tax.py b/src/pretix/base/services/tax.py
+index 781374c5..2a05d36e 100644
+--- a/src/pretix/base/services/tax.py
++++ b/src/pretix/base/services/tax.py
+@@ -27,7 +27,6 @@ from decimal import Decimal
+ from xml.etree import ElementTree
+ 
+ import requests
+-import vat_moss.id
+ from django.conf import settings
+ from django.utils.translation import gettext_lazy as _
+ from zeep import Client, Transport
+@@ -42,14 +41,142 @@ logger = logging.getLogger(__name__)
+ error_messages = {
+     'unavailable': _(
+         'Your VAT ID could not be checked, as the VAT checking service of '
+-        'your country is currently not available. We will therefore '
+-        'need to charge VAT on your invoice. You can get the tax amount '
+-        'back via the VAT reimbursement process.'
++        'your country is currently not available. We will therefore need to '
++        'charge you the same tax rate as if you did not enter a VAT ID.'
+     ),
+     'invalid': _('This VAT ID is not valid. Please re-check your input.'),
+     'country_mismatch': _('Your VAT ID does not match the selected country.'),
+ }
+ 
++VAT_ID_PATTERNS = {
++    # Patterns generated by consulting the following URLs:
++    #
++    #  - http://en.wikipedia.org/wiki/VAT_identification_number
++    #  - http://ec.europa.eu/taxation_customs/vies/faq.html
++    #  - https://euipo.europa.eu/tunnel-web/secure/webdav/guest/document_library/Documents/COSME/VAT%20numbers%20EU.pdf
++    #  - http://www.skatteetaten.no/en/International-pages/Felles-innhold-benyttes-i-flere-malgrupper/Brochure/Guide-to-value-added-tax-in-Norway/?chapter=7159
++    'AT': {  # Austria
++        'regex': '^U\\d{8}$',
++        'country_code': 'AT'
++    },
++    'BE': {  # Belgium
++        'regex': '^(1|0?)\\d{9}$',
++        'country_code': 'BE'
++    },
++    'BG': {  # Bulgaria
++        'regex': '^\\d{9,10}$',
++        'country_code': 'BG'
++    },
++    'CH': {  # Switzerland
++        'regex': '^\\dE{9}$',
++        'country_code': 'CH'
++    },
++    'CY': {  # Cyprus
++        'regex': '^\\d{8}[A-Z]$',
++        'country_code': 'CY'
++    },
++    'CZ': {  # Czech Republic
++        'regex': '^\\d{8,10}$',
++        'country_code': 'CZ'
++    },
++    'DE': {  # Germany
++        'regex': '^\\d{9}$',
++        'country_code': 'DE'
++    },
++    'DK': {  # Denmark
++        'regex': '^\\d{8}$',
++        'country_code': 'DK'
++    },
++    'EE': {  # Estonia
++        'regex': '^\\d{9}$',
++        'country_code': 'EE'
++    },
++    'EL': {  # Greece
++        'regex': '^\\d{9}$',
++        'country_code': 'GR'
++    },
++    'ES': {  # Spain
++        'regex': '^[A-Z0-9]\\d{7}[A-Z0-9]$',
++        'country_code': 'ES'
++    },
++    'FI': {  # Finland
++        'regex': '^\\d{8}$',
++        'country_code': 'FI'
++    },
++    'FR': {  # France
++        'regex': '^[A-Z0-9]{2}\\d{9}$',
++        'country_code': 'FR'
++    },
++    'GB': {  # United Kingdom
++        'regex': '^(GD\\d{3}|HA\\d{3}|\\d{9}|\\d{12})$',
++        'country_code': 'GB'
++    },
++    'HR': {  # Croatia
++        'regex': '^\\d{11}$',
++        'country_code': 'HR'
++    },
++    'HU': {  # Hungary
++        'regex': '^\\d{8}$',
++        'country_code': 'HU'
++    },
++    'IE': {  # Ireland
++        'regex': '^(\\d{7}[A-Z]{1,2}|\\d[A-Z+*]\\d{5}[A-Z])$',
++        'country_code': 'IE'
++    },
++    'IT': {  # Italy
++        'regex': '^\\d{11}$',
++        'country_code': 'IT'
++    },
++    'LT': {  # Lithuania
++        'regex': '^(\\d{9}|\\d{12})$',
++        'country_code': 'LT'
++    },
++    'LU': {  # Luxembourg
++        'regex': '^\\d{8}$',
++        'country_code': 'LU'
++    },
++    'LV': {  # Latvia
++        'regex': '^\\d{11}$',
++        'country_code': 'LV'
++    },
++    'MT': {  # Malta
++        'regex': '^\\d{8}$',
++        'country_code': 'MT'
++    },
++    'NL': {  # Netherlands
++        'regex': '^\\d{9}B\\d{2}$',
++        'country_code': 'NL'
++    },
++    'NO': {  # Norway
++        'regex': '^\\d{9}MVA$',
++        'country_code': 'NO'
++    },
++    'PL': {  # Poland
++        'regex': '^\\d{10}$',
++        'country_code': 'PL'
++    },
++    'PT': {  # Portugal
++        'regex': '^\\d{9}$',
++        'country_code': 'PT'
++    },
++    'RO': {  # Romania
++        'regex': '^\\d{2,10}$',
++        'country_code': 'RO'
++    },
++    'SE': {  # Sweden
++        'regex': '^\\d{12}$',
++        'country_code': 'SE'
++    },
++    'SI': {  # Slovenia
++        'regex': '^\\d{8}$',
++        'country_code': 'SI'
++    },
++    'SK': {  # Slovakia
++        'regex': '^\\d{10}$',
++        'country_code': 'SK'
++    },
++}
++
+ 
+ class VATIDError(Exception):
+     def __init__(self, message):
+@@ -64,13 +191,57 @@ class VATIDTemporaryError(VATIDError):
+     pass
+ 
+ 
++def normalize_vat_id(vat_id, country_code):
++    """
++    Accepts a VAT ID and normaizes it, getting rid of spaces, periods, dashes
++    etc and converting it to upper case.
++
++    Original function from https://github.com/wbond/vat_moss-python
++    Copyright (c) 2015 Will Bond <will@wbond.net>
++    MIT License
++    """
++    if not vat_id:
++        return None
++
++    if not isinstance(vat_id, str):
++        raise TypeError('VAT ID is not a string')
++
++    if len(vat_id) < 3:
++        raise ValueError('VAT ID must be at least three character long')
++
++    # Normalize the ID for simpler regexes
++    vat_id = re.sub('\\s+', '', vat_id)
++    vat_id = vat_id.replace('-', '')
++    vat_id = vat_id.replace('.', '')
++    vat_id = vat_id.upper()
++
++    # Clean the different shapes a number can take in Switzerland depending on purpse
++    if country_code == "CH":
++        vat_id = re.sub('[^A-Z0-9]', '', vat_id.replace('HR', '').replace('MWST', ''))
++
++    # Fix people using GR prefix for Greece
++    if vat_id[0:2] == "GR" and country_code == "GR":
++        vat_id = "EL" + vat_id[2:]
++
++    # Check if we already have a valid country prefix. If not, we try to figure out if we can
++    # add one, since in some countries (e.g. Italy) it's very custom to enter it without the prefix
++    if vat_id[:2] in VAT_ID_PATTERNS and re.match(VAT_ID_PATTERNS[vat_id[0:2]]['regex'], vat_id[2:]):
++        # Prefix set and prefix matches pattern, nothing to do
++        pass
++    elif re.match(VAT_ID_PATTERNS[cc_to_vat_prefix(country_code)]['regex'], vat_id):
++        # Prefix not set but adding it fixes pattern
++        vat_id = cc_to_vat_prefix(country_code) + vat_id
++    else:
++        # We have no idea what this is
++        pass
++
++    return vat_id
++
++
+ def _validate_vat_id_NO(vat_id, country_code):
+     # Inspired by vat_moss library
+-    if not vat_id.startswith("NO"):
+-        # prefix is not usually used in Norway, but expected by vat_moss library
+-        vat_id = "NO" + vat_id
+     try:
+-        vat_id = vat_moss.id.normalize(vat_id)
++        vat_id = normalize_vat_id(vat_id, country_code)
+     except ValueError:
+         raise VATIDFinalError(error_messages['invalid'])
+ 
+@@ -104,7 +275,7 @@ def _validate_vat_id_NO(vat_id, country_code):
+ def _validate_vat_id_EU(vat_id, country_code):
+     # Inspired by vat_moss library
+     try:
+-        vat_id = vat_moss.id.normalize(vat_id)
++        vat_id = normalize_vat_id(vat_id, country_code)
+     except ValueError:
+         raise VATIDFinalError(error_messages['invalid'])
+ 
+@@ -112,11 +283,10 @@ def _validate_vat_id_EU(vat_id, country_code):
+         raise VATIDFinalError(error_messages['invalid'])
+ 
+     number = vat_id[2:]
+-
+     if vat_id[:2] != cc_to_vat_prefix(country_code):
+         raise VATIDFinalError(error_messages['country_mismatch'])
+ 
+-    if not re.match(vat_moss.id.ID_PATTERNS[cc_to_vat_prefix(country_code)]['regex'], number):
++    if not re.match(VAT_ID_PATTERNS[cc_to_vat_prefix(country_code)]['regex'], number):
+         raise VATIDFinalError(error_messages['invalid'])
+ 
+     # We are relying on the country code of the normalized VAT-ID and not the user/InvoiceAddress-provided
+@@ -175,9 +345,12 @@ def _validate_vat_id_EU(vat_id, country_code):
+ 
+ def _validate_vat_id_CH(vat_id, country_code):
+     if vat_id[:3] != 'CHE':
+-        raise VATIDFinalError(_('Your VAT ID does not match the selected country.'))
++        raise VATIDFinalError(error_messages['country_mismatch'])
+ 
+-    vat_id = re.sub('[^A-Z0-9]', '', vat_id.replace('HR', '').replace('MWST', ''))
++    try:
++        vat_id = normalize_vat_id(vat_id, country_code)
++    except ValueError:
++        raise VATIDFinalError(error_messages['invalid'])
+     try:
+         transport = Transport(
+             cache=SqliteCache(os.path.join(settings.CACHE_DIR, "validate_vat_id_ch_zeep_cache.db")),
+diff --git a/src/pretix/base/settings.py b/src/pretix/base/settings.py
+index c2422fe6..e6d123d0 100644
+--- a/src/pretix/base/settings.py
++++ b/src/pretix/base/settings.py
+@@ -629,13 +629,40 @@ DEFAULTS = {
+         'form_kwargs': dict(
+             label=_("Ask for VAT ID"),
+             help_text=format_lazy(
+-                _("Only works if an invoice address is asked for. VAT ID is never required and only requested from "
+-                  "business customers in the following countries: {countries}"),
++                _("Only works if an invoice address is asked for. VAT ID is only requested from business customers "
++                  "in the following countries: {countries}."),
+                 countries=lazy(lambda *args: ', '.join(sorted(gettext(Country(cc).name) for cc in VAT_ID_COUNTRIES)), str)()
+             ),
+             widget=forms.CheckboxInput(attrs={'data-checkbox-dependency': '#id_invoice_address_asked'}),
+         )
+     },
++    'invoice_address_vatid_required_countries': {
++        'default': ['IT', 'GR'],
++        'type': list,
++        'form_class': forms.MultipleChoiceField,
++        'serializer_class': serializers.MultipleChoiceField,
++        'serializer_kwargs': dict(
++            choices=lazy(
++                lambda *args: sorted([(cc, gettext(Country(cc).name)) for cc in VAT_ID_COUNTRIES], key=lambda c: c[1]),
++                list
++            )(),
++        ),
++        'form_kwargs': dict(
++            label=_("Require VAT ID in"),
++            choices=lazy(
++                lambda *args: sorted([(cc, gettext(Country(cc).name)) for cc in VAT_ID_COUNTRIES], key=lambda c: c[1]),
++                list
++            )(),
++            help_text=format_lazy(
++                _("VAT ID is optional by default, because not all businesses are assigned a VAT ID in all countries. "
++                  "VAT ID will be required for all business addresses in the selected countries."),
++            ),
++            widget=forms.CheckboxSelectMultiple(attrs={
++                "class": "scrolling-multiple-choice",
++                'data-display-dependency': '#id_invoice_address_vatid'
++            }),
++        )
++    },
+     'invoice_address_explanation_text': {
+         'default': '',
+         'type': LazyI18nString,
+diff --git a/src/pretix/base/views/js_helpers.py b/src/pretix/base/views/js_helpers.py
+index 7da2c839..e1aee64a 100644
+--- a/src/pretix/base/views/js_helpers.py
++++ b/src/pretix/base/views/js_helpers.py
+@@ -22,7 +22,7 @@
+ import pycountry
+ from django.http import JsonResponse
+ from django.shortcuts import get_object_or_404
+-from django.utils.translation import pgettext
++from django.utils.translation import gettext, pgettext, pgettext_lazy
+ from django_countries.fields import Country
+ from django_scopes import scope
+ 
+@@ -36,6 +36,22 @@ from pretix.base.settings import (
+     COUNTRIES_WITH_STATE_IN_ADDRESS, COUNTRY_STATE_LABEL,
+ )
+ 
++VAT_ID_LABELS = {
++    # VAT ID is a EU concept and Switzerland has a distinct, but differently-named concept
++    "CH": pgettext_lazy("tax_id_swiss", "UID"),  # Translators: Only translate to French (IDE) and Italien (IDI), otherwise keep the same
++
++    # Awareness around VAT IDs differes by EU country. For example, in Germany the VAT ID is assigned
++    # separately to each company and only used in cross-country transactions. Therefore, it makes sense
++    # to call it just "VAT ID" on the form, and people will either know their VAT ID or they don't.
++    # In contrast, in Italy the EU-compatible VAT ID is not separately assigned, but is just "IT" + the national tax
++    # number (Partita IVA) and also used on domestic transactions. So someone who never purchased something international
++    # for their company, might still know the value, if we call it the right way and not just "VAT ID".
++    "IT": pgettext_lazy("tax_id_italy", "VAT ID / P.IVA"),  # Translators: Translate to only "P.IVA" in Italian, keep second part as-is in other languages
++    "GR": pgettext_lazy("tax_id_greece", "VAT ID / TIN"),  # Translators: Translate to only "ΑΦΜ" in Greek
++    "ES": pgettext_lazy("tax_id_spain", "VAT ID / NIF"),  # Translators: Translate to only "NIF" in Spanish
++    "PT": pgettext_lazy("tax_id_portugal", "VAT ID / NIF"),  # Translators: Translate to only "NIF" in Portuguese
++}
++
+ 
+ def _info(cc):
+     info = {
+@@ -47,7 +63,12 @@ def _info(cc):
+             'required': 'if_any' if cc in COUNTRIES_WITH_STATE_IN_ADDRESS else False,
+             'label': COUNTRY_STATE_LABEL.get(cc, pgettext('address', 'State')),
+         },
+-        'vat_id': {'visible': cc in VAT_ID_COUNTRIES, 'required': False},
++        'vat_id': {
++            'visible': cc in VAT_ID_COUNTRIES,
++            'required': False,
++            'label': VAT_ID_LABELS.get(cc, gettext("VAT ID")),
++            'helptext_visible': True,
++        },
+     }
+     if cc not in COUNTRIES_WITH_STATE_IN_ADDRESS:
+         return {'data': [], **info}
+@@ -124,4 +145,10 @@ def address_form(request):
+                         "required": transmission_type.identifier == selected_transmission_type and k in required
+                     }
+ 
++            if is_business and country in event.settings.invoice_address_vatid_required_countries and info["vat_id"]["visible"]:
++                info["vat_id"]["required"] = True
++            if info["vat_id"]["required"]:
++                # The help text explains that it is optional, so we want to hide that if it is required
++                info["vat_id"]["helptext_visible"] = False
++
+     return JsonResponse(info)
+diff --git a/src/pretix/control/forms/event.py b/src/pretix/control/forms/event.py
+index 8402d35e..2be60e9b 100644
+--- a/src/pretix/control/forms/event.py
++++ b/src/pretix/control/forms/event.py
+@@ -927,6 +927,7 @@ class InvoiceSettingsForm(EventSettingsValidationMixin, SettingsForm):
+         'invoice_address_asked',
+         'invoice_address_required',
+         'invoice_address_vatid',
++        'invoice_address_vatid_required_countries',
+         'invoice_address_company_required',
+         'invoice_address_beneficiary',
+         'invoice_address_custom_field',
+diff --git a/src/pretix/control/templates/pretixcontrol/event/invoicing.html b/src/pretix/control/templates/pretixcontrol/event/invoicing.html
+index 0b9751df..6f42727b 100644
+--- a/src/pretix/control/templates/pretixcontrol/event/invoicing.html
++++ b/src/pretix/control/templates/pretixcontrol/event/invoicing.html
+@@ -43,6 +43,7 @@
+                 {% bootstrap_field form.invoice_name_required layout="control" %}
+                 {% bootstrap_field form.invoice_address_company_required layout="control" %}
+                 {% bootstrap_field form.invoice_address_vatid layout="control" %}
++                {% bootstrap_field form.invoice_address_vatid_required_countries layout="control" %}
+                 {% bootstrap_field form.invoice_address_beneficiary layout="control" %}
+                 {% bootstrap_field form.invoice_address_not_asked_free layout="control" %}
+                 {% bootstrap_field form.invoice_address_custom_field layout="control" %}
+diff --git a/src/pretix/static/pretixbase/js/addressform.js b/src/pretix/static/pretixbase/js/addressform.js
+index 1dee56fe..5933fb98 100644
+--- a/src/pretix/static/pretixbase/js/addressform.js
++++ b/src/pretix/static/pretixbase/js/addressform.js
+@@ -82,6 +82,9 @@ $(function () {
+                 if ('label' in options) {
+                     dependent.closest(".form-group").find(".control-label").text(options.label);
+                 }
++                if ('helptext_visible' in options) {
++                    dependent.closest(".form-group").find(".help-block").toggle(options.helptext_visible);
++                }
+ 
+                 const required = 'required' in options && visible && (
+                     (options.required === 'if_any' && isAnyRequired) ||

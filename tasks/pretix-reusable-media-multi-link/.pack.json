@@ -1,0 +1,27 @@
+{
+  "pr": 5666,
+  "sha": "721b1795216ae5e77ad542330667de32e587bc23",
+  "base": "d3151f978d3b836255d16e204cda7fcefb4a4d6d",
+  "python": "3.13",
+  "slug": "pretix-reusable-media-multi-link",
+  "must_turn_green": 15,
+  "must_stay_green": 159,
+  "gold_src_files": [
+    "src/pretix/api/serializers/media.py",
+    "src/pretix/api/serializers/order.py",
+    "src/pretix/api/views/checkin.py",
+    "src/pretix/api/views/media.py",
+    "src/pretix/api/views/order.py",
+    "src/pretix/base/exporters/reusablemedia.py",
+    "src/pretix/base/migrations/0300_add_reusablemedium_label.py",
+    "src/pretix/base/migrations/0301_reusablemedium_remove_orderposition.py",
+    "src/pretix/base/models/media.py",
+    "src/pretix/base/services/orders.py",
+    "src/pretix/control/forms/filter.py",
+    "src/pretix/control/forms/organizer.py",
+    "src/pretix/control/logdisplay.py",
+    "src/pretix/control/templates/pretixcontrol/organizers/reusable_media.html",
+    "src/pretix/control/templates/pretixcontrol/organizers/reusable_medium.html",
+    "src/pretix/control/views/organizer.py"
+  ]
+}

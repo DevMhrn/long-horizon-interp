@@ -1,0 +1,9 @@
+[
+  "tests.control.test_waitinglist::test_assign_single",
+  "tests.control.test_waitinglist::test_dashboard",
+  "tests.control.test_waitinglist::test_delete_bulk",
+  "tests.control.test_waitinglist::test_delete_single",
+  "tests.control.test_waitinglist::test_edit_voucher_send_out",
+  "tests.control.test_waitinglist::test_list",
+  "tests.control.test_waitinglist::test_priority_single"
+]

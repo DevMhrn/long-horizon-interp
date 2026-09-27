@@ -1,0 +1,978 @@
+diff --git a/src/pretix/api/serializers/media.py b/src/pretix/api/serializers/media.py
+index d759f146..cce6e861 100644
+--- a/src/pretix/api/serializers/media.py
++++ b/src/pretix/api/serializers/media.py
+@@ -66,13 +66,14 @@ class ReusableMediaSerializer(I18nAwareModelSerializer):
+ 
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
++        expand_nested = self.context['request'].query_params.getlist('expand')
+ 
+-        if 'linked_giftcard' in self.context['request'].query_params.getlist('expand'):
++        if 'linked_giftcard' in expand_nested:
+             if not self.context["can_read_giftcards"]:
+                 raise PermissionDenied("No permission to access gift card details.")
+ 
+             self.fields['linked_giftcard'] = NestedGiftCardSerializer(read_only=True, context=self.context)
+-            if 'linked_giftcard.owner_ticket' in self.context['request'].query_params.getlist('expand'):
++            if 'linked_giftcard.owner_ticket' in expand_nested:
+                 self.fields['linked_giftcard'].fields['owner_ticket'] = NestedOrderPositionSerializer(read_only=True, context=self.context)
+         else:
+             self.fields['linked_giftcard'] = serializers.PrimaryKeyRelatedField(
+@@ -81,17 +82,27 @@ class ReusableMediaSerializer(I18nAwareModelSerializer):
+                 queryset=self.context['organizer'].issued_gift_cards.all()
+             )
+ 
+-        if 'linked_orderposition' in self.context['request'].query_params.getlist('expand'):
+-            # Permission Check performed in to_representation
+-            self.fields['linked_orderposition'] = NestedOrderPositionSerializer(read_only=True)
++        # keep linked_orderposition (singular) for backwards compatibility, will be overwritten in self.validate
++        self.fields['linked_orderposition'] = serializers.PrimaryKeyRelatedField(
++            required=False,
++            allow_null=True,
++            queryset=OrderPosition.all.filter(order__event__organizer=self.context['organizer']),
++        )
++
++        if 'linked_orderposition' in expand_nested or 'linked_orderpositions' in expand_nested:
++            self.fields['linked_orderpositions'] = NestedOrderPositionSerializer(
++                many=True,
++                read_only=True
++            )
+         else:
+-            self.fields['linked_orderposition'] = serializers.PrimaryKeyRelatedField(
++            self.fields['linked_orderpositions'] = serializers.PrimaryKeyRelatedField(
++                many=True,
+                 required=False,
+                 allow_null=True,
+                 queryset=OrderPosition.all.filter(order__event__organizer=self.context['organizer']),
+             )
+ 
+-        if 'customer' in self.context['request'].query_params.getlist('expand'):
++        if 'customer' in expand_nested:
+             if not self.context["can_read_customers"]:
+                 raise PermissionDenied("No permission to access customer details.")
+ 
+@@ -106,6 +117,21 @@ class ReusableMediaSerializer(I18nAwareModelSerializer):
+ 
+     def validate(self, data):
+         data = super().validate(data)
++        if 'linked_orderposition' in data:
++            linked_orderposition = data['linked_orderposition']
++            # backwards-compatibility
++            if 'linked_orderpositions' in data:
++                raise ValidationError({
++                    'linked_orderposition': 'You cannot use linked_orderposition and linked_orderpositions at the same time.'
++                })
++            if self.instance and self.instance.linked_orderpositions.count() > 1:
++                raise ValidationError({
++                    'linked_orderposition': 'There are more than one linked_orderposition. You need to use linked_orderpositions.'
++                })
++
++            data['linked_orderpositions'] = [linked_orderposition] if linked_orderposition else []
++            del data['linked_orderposition']
++
+         if 'type' in data and 'identifier' in data:
+             qs = self.context['organizer'].reusable_media.filter(
+                 identifier=data['identifier'], type=data['type']
+@@ -121,14 +147,28 @@ class ReusableMediaSerializer(I18nAwareModelSerializer):
+     def to_representation(self, instance):
+         r = super().to_representation(instance)
+         request = self.context.get('request')
++
++        ops = r.get('linked_orderpositions', [])
+         # late permission evaluations for checks that depend on the actual linked events
+         expand_nested = self.context['request'].query_params.getlist('expand')
+         perm_holder = request.auth if isinstance(request.auth, (Device, TeamAPIToken)) else request.user
+-        if 'linked_orderposition' in expand_nested:
+-            if instance.linked_orderposition is not None:
+-                event = instance.linked_orderposition.order.event
++        if ops and 'linked_orderposition' in expand_nested or 'linked_orderpositions' in expand_nested:
++            ops_noperm = []
++            for lop in instance.linked_orderpositions.all():
++                event = lop.order.event
+                 if not perm_holder.has_event_permission(event.organizer, event, 'event.orders:read', request):
+-                    r['linked_orderposition'] = {'id': instance.linked_orderposition.id}
++                    ops_noperm.append(lop.id)
++            if ops_noperm:
++                ops = [
++                    {'id': op['id']} if op['id'] in ops_noperm
++                    else op
++                    for op in ops
++                ]
++                r['linked_orderpositions'] = ops
++
++        # add linked_orderposition (singular) for backwards compatibility
++        if len(ops) < 2:
++            r['linked_orderposition'] = ops[0] if ops else None
+ 
+         if 'linked_giftcard.owner_ticket' in expand_nested:
+             gc = instance.linked_giftcard
+@@ -148,10 +188,12 @@ class ReusableMediaSerializer(I18nAwareModelSerializer):
+             'updated',
+             'type',
+             'identifier',
++            'claim_token',
++            'label',
+             'active',
+             'expires',
+             'customer',
+-            'linked_orderposition',
++            'linked_orderpositions',
+             'linked_giftcard',
+             'info',
+             'notes',
+diff --git a/src/pretix/api/serializers/order.py b/src/pretix/api/serializers/order.py
+index 9fa6b5ce..0cfcb3a4 100644
+--- a/src/pretix/api/serializers/order.py
++++ b/src/pretix/api/serializers/order.py
+@@ -1043,13 +1043,15 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+     requested_valid_from = serializers.DateTimeField(required=False, allow_null=True)
+     use_reusable_medium = serializers.PrimaryKeyRelatedField(queryset=ReusableMedium.objects.none(),
+                                                              required=False, allow_null=True)
++    add_to_reusable_medium = serializers.PrimaryKeyRelatedField(queryset=ReusableMedium.objects.none(),
++                                                                required=False, allow_null=True)
+ 
+     class Meta:
+         model = OrderPosition
+         fields = ('positionid', 'item', 'variation', 'price', 'attendee_name', 'attendee_name_parts', 'attendee_email',
+                   'company', 'street', 'zipcode', 'city', 'country', 'state', 'is_bundled',
+                   'secret', 'addon_to', 'subevent', 'answers', 'seat', 'voucher', 'valid_from', 'valid_until',
+-                  'requested_valid_from', 'use_reusable_medium', 'discount')
++                  'requested_valid_from', 'use_reusable_medium', 'add_to_reusable_medium', 'discount')
+ 
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+@@ -1061,6 +1063,8 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+         with scopes_disabled():
+             if 'use_reusable_medium' in self.fields:
+                 self.fields['use_reusable_medium'].queryset = ReusableMedium.objects.all()
++            if 'add_to_reusable_medium' in self.fields:
++                self.fields['add_to_reusable_medium'].queryset = ReusableMedium.objects.all()
+ 
+     def validate_secret(self, secret):
+         if secret and OrderPosition.all.filter(order__event=self.context['event'], secret=secret).exists():
+@@ -1076,6 +1080,9 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+             )
+         return m
+ 
++    def validate_add_to_reusable_medium(self, m):
++        return self.validate_use_reusable_medium(m)
++
+     def validate_item(self, item):
+         if item.event != self.context['event']:
+             raise ValidationError(
+@@ -1149,6 +1156,13 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
+             raise ValidationError(
+                 {'discount': ['You can only specify a discount if you do the price computation, but price is not set.']}
+             )
++
++        if 'use_reusable_medium' in data and 'add_to_reusable_medium' in data:
++            raise ValidationError({
++                'use_reusable_medium': ['You can only specify either use_reusable_medium or add_to_reusable_medium.'],
++                'add_to_reusable_medium': ['You can only specify either use_reusable_medium or add_to_reusable_medium.'],
++            })
++
+         return data
+ 
+ 
+@@ -1588,7 +1602,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                 pos_data['attendee_name_parts'] = {
+                     '_legacy': attendee_name
+                 }
+-            pos = OrderPosition(**{k: v for k, v in pos_data.items() if k != 'answers' and k != '_quotas' and k != 'use_reusable_medium'})
++            pos = OrderPosition(**{k: v for k, v in pos_data.items() if k not in ('answers', '_quotas', 'use_reusable_medium', 'add_to_reusable_medium')})
+             if simulate:
+                 pos.order = order._wrapped
+             else:
+@@ -1662,6 +1676,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+         for pos_data in positions_data:
+             answers_data = pos_data.pop('answers', [])
+             use_reusable_medium = pos_data.pop('use_reusable_medium', None)
++            add_to_reusable_medium = pos_data.pop('add_to_reusable_medium', None)
+             pos = pos_data['__instance']
+             pos._calculate_tax(invoice_address=ia)
+ 
+@@ -1703,10 +1718,25 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
+                         answ.options.add(*options)
+ 
+                 if use_reusable_medium:
+-                    use_reusable_medium.linked_orderposition = pos
+-                    use_reusable_medium.save(update_fields=['linked_orderposition'])
++                    for op_pk in use_reusable_medium.linked_orderpositions.values_list('pk', flat=True):
++                        use_reusable_medium.log_action(
++                            'pretix.reusable_medium.linked_orderposition.removed',
++                            data={
++                                'linked_orderposition': op_pk,
++                            }
++                        )
++                    use_reusable_medium.linked_orderpositions.set([pos])
+                     use_reusable_medium.log_action(
+-                        'pretix.reusable_medium.linked_orderposition.changed',
++                        'pretix.reusable_medium.linked_orderposition.added',
++                        data={
++                            'by_order': order.code,
++                            'linked_orderposition': pos.pk,
++                        }
++                    )
++                elif add_to_reusable_medium:
++                    add_to_reusable_medium.linked_orderpositions.add(pos)
++                    add_to_reusable_medium.log_action(
++                        'pretix.reusable_medium.linked_orderposition.added',
+                         data={
+                             'by_order': order.code,
+                             'linked_orderposition': pos.pk,
+diff --git a/src/pretix/api/views/checkin.py b/src/pretix/api/views/checkin.py
+index c6567a4d..20d9ff85 100644
+--- a/src/pretix/api/views/checkin.py
++++ b/src/pretix/api/views/checkin.py
+@@ -491,6 +491,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+     )
+     raw_barcode_for_checkin = None
+     from_revoked_secret = False
++    reusable_medium_used = None
+     if simulate:
+         common_checkin_args['__fake_arg_to_prevent_this_from_being_saved'] = True
+ 
+@@ -521,11 +522,12 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+     #    with respecting the force option), or it's a reusable medium (-> proceed with that)
+     if not op_candidates:
+         try:
+-            media = ReusableMedium.objects.select_related('linked_orderposition').active().get(
++            media = ReusableMedium.objects.active().filter(
++                Exists(ReusableMedium.linked_orderpositions.through.objects.filter(reusablemedium_id=OuterRef('pk')))
++            ).get(
+                 organizer_id=checkinlists[0].event.organizer_id,
+                 type=source_type,
+                 identifier=raw_barcode,
+-                linked_orderposition__isnull=False,
+             )
+             raw_barcode_for_checkin = raw_barcode
+         except ReusableMedium.DoesNotExist:
+@@ -628,7 +630,9 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                     'list': MiniCheckinListSerializer(list_by_event[revoked_matches[0].event_id]).data,
+                 }, status=400)
+         else:
+-            if media.linked_orderposition.order.event_id not in list_by_event:
++            linked_ops = media.linked_orderpositions.all().select_related("order").prefetch_related("addons")
++            linked_event_ids = {op.order.event_id for op in linked_ops}
++            if not any(event_id in list_by_event for event_id in linked_event_ids):
+                 # Medium exists but connected ticket is for the wrong event
+                 if not simulate:
+                     checkinlists[0].event.log_action('pretix.event.checkin.unknown', data={
+@@ -654,28 +658,91 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                     'checkin_texts': [],
+                     'list': MiniCheckinListSerializer(checkinlists[0]).data,
+                 }, status=404)
+-            op_candidates = [media.linked_orderposition]
+-            if list_by_event[media.linked_orderposition.order.event_id].addon_match:
+-                op_candidates += list(media.linked_orderposition.addons.all())
++            op_candidates = []
++            for op in linked_ops:
++                if op.order.event_id in list_by_event:
++                    reusable_medium_used = media
++                    op_candidates.append(op)
++                    if list_by_event[op.order.event_id].addon_match:
++                        op_candidates += list(op.addons.all())
+ 
+     # 3. Handle the "multiple options found" case: Except for the unlikely case of a secret being also a valid primary
+-    #    key on the same list, we're probably dealing with the ``addon_match`` case here and need to figure out
+-    #    which add-on has the right product.
++    #    key on the same list, we're probably dealing with multiple linked_orderpositions or the ``addon_match`` case
++    #    here and need to figure out which op has the right product. This basically is a valid-for-checkin-test on every op.
+     if len(op_candidates) > 1:
+-        op_candidates_matching_product = [
+-            op for op in op_candidates
+-            if (
+-                (list_by_event[op.order.event_id].addon_match or op.secret == raw_barcode or legacy_url_support) and
+-                (list_by_event[op.order.event_id].all_products or op.item_id in {i.pk for i in list_by_event[op.order.event_id].limit_products.all()})
+-            )
+-        ]
+ 
+-        if len(op_candidates_matching_product) == 0:
+-            # None of the found add-ons has the correct product, too bad! We could just error out here, but
++        if not reusable_medium_used:
++            # 3a. First, we clean up that we made an imprecise query above. If a scan is made for multiple check-in lists,
++            # we have queried ``addon_to__secret=raw_barcode``, even if some of the lists in question do not allow addon
++            # matching. So we accept all candidates that match one of these cases:
++            # - Exactly the ticket secret we scanned (because that's always a possible result)
++            # - Exactly the ticket pk we scanned (on legacy endpoints)
++            # - An add-on on a list that allows add-on matching
++            # This is not necessary when a reusable media was used, since in that case we already obeyed list.addon_match
++            # correctly above.
++            op_candidates_filtered = [
++                op for op in op_candidates
++                if (
++                    op.secret == raw_barcode or
++                    list_by_event[op.order.event_id].addon_match or
++                    (str(op.pk) == raw_barcode and legacy_url_support and not untrusted_input)
++                )
++            ]
++        else:
++            op_candidates_filtered = op_candidates
++
++        if len(op_candidates_filtered) > 1:
++            # 3b. If we still have multiple candidates, we filter by product based on the check-in list configuration.
++            # This is relevant for the addon_match scenario where the scanned ticket has multiple add-ons, but only
++            # one is contained in the check-in list used to scan. It makes sense to filter this first, since it is a
++            # "static" check, i.e. scanning the same QR code on the same check-in list will always do the same, no matter
++            # when I scan it, and it is "intentional" filtering in the sense that the admin configured this behaviour
++            # into the check-in list.
++            op_candidates_filtered = [
++                op for op in op_candidates_filtered
++                if list_by_event[op.order.event_id].all_products or op.item_id in {i.pk for i in list_by_event[op.order.event_id].limit_products.all()}
++            ]
++
++        if len(op_candidates_filtered) > 1:
++            # 3c. If we still have multiple candidates, we filter by validity date. This was introduced for the case where
++            # a reusable media refers to two tickets, one currently valid and one expired or in the future. Howeer,
++            # it could in theory also happen with two add-ons being on the same check-in list but without overlapping
++            # validity. It makes sense to filter this "after" the previous checks since it is not "intentional" filtering
++            # configured by the admin but "accidental" filtering that depends on the time of execution.
++            op_candidates_filtered = [
++                op for op in op_candidates_filtered
++                if (
++                    (not op.valid_from or op.valid_from <= datetime) and
++                    (not op.valid_until or op.valid_until > datetime)
++                )
++            ]
++
++        if len(op_candidates_filtered) == 0:
++            # None of the ops is valid today or has the correct product, too bad! We could just error out here, but
+             # instead we just continue with *any* product and have it rejected by the check in perform_checkin.
+-            # This has the advantage of a better error message.
+-            op_candidates = [op_candidates[0]]
+-        elif len(op_candidates_matching_product) > 1:
++            # To improve the error message, we select the op that will "work next" or - if none matches - "worked last".
++            op_candidate = None
++            for op in op_candidates:
++                if (
++                    op.valid_from and op.valid_from > datetime and
++                    (not op_candidate or op.valid_from < op_candidate.valid_from)
++                ):
++                    op_candidate = op
++
++            if not op_candidate:
++                # no candidate in the future, get closest in the past
++                for op in op_candidates:
++                    if (
++                        op.valid_until and op.valid_until < datetime and
++                        (not op_candidate or op.valid_until > op_candidate.valid_until)
++                    ):
++                        op_candidate = op
++
++            if not op_candidate:
++                op_candidate = op_candidates[0]
++
++            op_candidates = [op_candidate]
++        elif len(op_candidates_filtered) > 1:
+             # It's still ambiguous, we'll error out.
+             # We choose the first match (regardless of product) for the logging since it's most likely to be the
+             # base product according to our order_by above.
+@@ -709,7 +776,7 @@ def _redeem_process(*, checkinlists, raw_barcode, answers_data, datetime, force,
+                 'list': MiniCheckinListSerializer(list_by_event[op.order.event_id]).data,
+             }, status=400)
+         else:
+-            op_candidates = op_candidates_matching_product
++            op_candidates = op_candidates_filtered
+ 
+     op = op_candidates[0]
+     common_checkin_args['list'] = list_by_event[op.order.event_id]
+diff --git a/src/pretix/api/views/media.py b/src/pretix/api/views/media.py
+index 7b3be781..7b150912 100644
+--- a/src/pretix/api/views/media.py
++++ b/src/pretix/api/views/media.py
+@@ -53,10 +53,12 @@ with scopes_disabled():
+         customer = django_filters.CharFilter(field_name='customer__identifier')
+         updated_since = django_filters.IsoDateTimeFilter(field_name='updated', lookup_expr='gte')
+         created_since = django_filters.IsoDateTimeFilter(field_name='created', lookup_expr='gte')
++        # backwards-compatible
++        linked_orderposition = django_filters.NumberFilter(field_name='linked_orderpositions__id')
+ 
+         class Meta:
+             model = ReusableMedium
+-            fields = ['identifier', 'type', 'active', 'customer', 'linked_orderposition', 'linked_giftcard']
++            fields = ['identifier', 'type', 'active', 'customer', 'linked_orderpositions', 'linked_giftcard']
+ 
+ 
+ class ReusableMediaViewSet(viewsets.ModelViewSet):
+@@ -75,7 +77,7 @@ class ReusableMediaViewSet(viewsets.ModelViewSet):
+         ).order_by().values('card').annotate(s=Sum('value')).values('s')
+         return self.request.organizer.reusable_media.prefetch_related(
+             Prefetch(
+-                'linked_orderposition',
++                'linked_orderpositions',
+                 queryset=OrderPosition.objects.select_related(
+                     'order', 'order__event', 'order__event__organizer', 'seat',
+                 ).prefetch_related(
+@@ -117,14 +119,38 @@ class ReusableMediaViewSet(viewsets.ModelViewSet):
+ 
+     @transaction.atomic()
+     def perform_update(self, serializer):
+-        ReusableMedium.objects.select_for_update(of=OF_SELF).get(pk=self.get_object().pk)
++        rm = ReusableMedium.objects.select_for_update(of=OF_SELF).get(pk=self.get_object().pk)
++        prev_linked_ops_pks = list(rm.linked_orderpositions.values_list("pk", flat=True))
+         inst = serializer.save(identifier=serializer.instance.identifier, type=serializer.instance.type)
+-        inst.log_action(
+-            'pretix.reusable_medium.changed',
+-            user=self.request.user,
+-            auth=self.request.auth,
+-            data=self.request.data,
+-        )
++        linked_ops_pks = inst.linked_orderpositions.values_list("pk", flat=True)
++        for op_pk in prev_linked_ops_pks:
++            if op_pk not in linked_ops_pks:
++                inst.log_action(
++                    'pretix.reusable_medium.linked_orderposition.removed',
++                    user=self.request.user,
++                    auth=self.request.auth,
++                    data={
++                        'linked_orderposition': op_pk,
++                    }
++                )
++        for op_pk in linked_ops_pks:
++            if op_pk not in prev_linked_ops_pks:
++                inst.log_action(
++                    'pretix.reusable_medium.linked_orderposition.added',
++                    user=self.request.user,
++                    auth=self.request.auth,
++                    data={
++                        'linked_orderposition': op_pk,
++                    }
++                )
++        data = {k: v for k, v in self.request.data.items() if k not in ('linked_orderposition', 'linked_orderpositions')}
++        if data:
++            inst.log_action(
++                'pretix.reusable_medium.changed',
++                user=self.request.user,
++                auth=self.request.auth,
++                data=data,
++            )
+         return inst
+ 
+     def perform_destroy(self, instance):
+@@ -157,7 +183,6 @@ class ReusableMediaViewSet(viewsets.ModelViewSet):
+                         type=s.validated_data["type"],
+                         identifier=s.validated_data["identifier"],
+                     )
+-                m.linked_orderposition = None  # not relevant for cross-organizer
+                 m.customer = None  # not relevant for cross-organizer
+                 s = self.get_serializer(m)
+                 return Response({"result": s.data})
+diff --git a/src/pretix/api/views/order.py b/src/pretix/api/views/order.py
+index 850ff066..31a81ed0 100644
+--- a/src/pretix/api/views/order.py
++++ b/src/pretix/api/views/order.py
+@@ -194,7 +194,7 @@ with scopes_disabled():
+                 )
+             ).values('id')
+ 
+-            matching_media = ReusableMedium.objects.filter(identifier=u).values_list('linked_orderposition__order_id', flat=True)
++            matching_media = ReusableMedium.objects.filter(identifier=u).values_list('linked_orderpositions__order_id', flat=True)
+ 
+             mainq = (
+                 code
+@@ -1034,7 +1034,7 @@ with scopes_disabled():
+         search = django_filters.CharFilter(method='search_qs')
+ 
+         def search_qs(self, queryset, name, value):
+-            matching_media = ReusableMedium.objects.filter(identifier=value).values_list('linked_orderposition', flat=True)
++            matching_media = ReusableMedium.objects.filter(identifier=value).values_list('linked_orderpositions', flat=True)
+             return queryset.filter(
+                 Q(secret__istartswith=value)
+                 | Q(attendee_name_cached__icontains=value)
+diff --git a/src/pretix/base/exporters/reusablemedia.py b/src/pretix/base/exporters/reusablemedia.py
+index fbc60059..10f95137 100644
+--- a/src/pretix/base/exporters/reusablemedia.py
++++ b/src/pretix/base/exporters/reusablemedia.py
+@@ -20,12 +20,13 @@
+ # <https://www.gnu.org/licenses/>.
+ #
+ 
++from django.db.models import Prefetch
+ from django.dispatch import receiver
+ from django.utils.formats import date_format
+ from django.utils.translation import gettext_lazy as _, pgettext, pgettext_lazy
+ 
+ from ..exporter import ListExporter, OrganizerLevelExportMixin
+-from ..models import ReusableMedium
++from ..models import OrderPosition, ReusableMedium
+ from ..signals import register_multievent_data_exporters
+ 
+ 
+@@ -44,7 +45,9 @@ class ReusableMediaExporter(OrganizerLevelExportMixin, ListExporter):
+         media = ReusableMedium.objects.filter(
+             organizer=self.organizer,
+         ).select_related(
+-            'customer', 'linked_orderposition', 'linked_giftcard',
++            'customer', 'linked_giftcard',
++        ).prefetch_related(
++            Prefetch('linked_orderpositions', queryset=OrderPosition.objects.select_related("order"))
+         ).order_by('created')
+ 
+         headers = [
+@@ -62,17 +65,16 @@ class ReusableMediaExporter(OrganizerLevelExportMixin, ListExporter):
+         yield self.ProgressSetTotal(total=media.count())
+ 
+         for medium in media.iterator(chunk_size=1000):
+-            row = [
++            yield [
+                 medium.type,
+                 medium.identifier,
+                 _('Yes') if medium.active else _('No'),
+                 date_format(medium.expires, 'SHORT_DATETIME_FORMAT') if medium.expires else '',
+                 medium.customer.identifier if medium.customer_id else '',
+-                f"{medium.linked_orderposition.order.code}-{medium.linked_orderposition.positionid}" if medium.linked_orderposition_id else '',
++                ', '.join([f"{op.order.code}-{op.positionid}" for op in medium.linked_orderpositions.all()]),
+                 medium.linked_giftcard.secret if medium.linked_giftcard_id else '',
+                 medium.notes,
+             ]
+-            yield row
+ 
+     def get_filename(self):
+         return f'{self.organizer.slug}_media'
+diff --git a/src/pretix/base/migrations/0300_add_reusablemedium_label.py b/src/pretix/base/migrations/0300_add_reusablemedium_label.py
+new file mode 100644
+index 00000000..0352c50b
+--- /dev/null
++++ b/src/pretix/base/migrations/0300_add_reusablemedium_label.py
+@@ -0,0 +1,35 @@
++# Generated by Django 4.2.26 on 2025-11-24 11:32
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("pretixbase", "0299_itemprogramtime_location"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="reusablemedium",
++            name="claim_token",
++            field=models.CharField(max_length=200, null=True),
++        ),
++        migrations.AddField(
++            model_name="reusablemedium",
++            name="label",
++            field=models.CharField(max_length=200, null=True),
++        ),
++        # use temporary related_name "linked_mediums" for ManyToManyField, so we can migrate existing data
++        migrations.AddField(
++            model_name="reusablemedium",
++            name="linked_orderpositions",
++            field=models.ManyToManyField(
++                related_name="linked_mediums", to="pretixbase.orderposition"
++            ),
++        ),
++        migrations.RunSQL(
++            sql="INSERT INTO pretixbase_reusablemedium_linked_orderpositions (reusablemedium_id, orderposition_id) SELECT id, linked_orderposition_id FROM pretixbase_reusablemedium WHERE linked_orderposition_id IS NOT NULL;",
++            reverse_sql="DELETE FROM pretixbase_reusablemedium_linked_orderpositions;",
++        ),
++    ]
+diff --git a/src/pretix/base/migrations/0301_reusablemedium_remove_orderposition.py b/src/pretix/base/migrations/0301_reusablemedium_remove_orderposition.py
+new file mode 100644
+index 00000000..8ba0a64b
+--- /dev/null
++++ b/src/pretix/base/migrations/0301_reusablemedium_remove_orderposition.py
+@@ -0,0 +1,44 @@
++# Generated by Django 4.2.26 on 2025-11-24 11:32
++
++from django.db import migrations, models
++
++
++def reverse(apps, schema_editor):
++    ReusableMedium = apps.get_model('pretixbase', 'ReusableMedium')
++
++    qs = ReusableMedium.linked_orderpositions.through.objects
++    objs = []
++    # get last added orderposition from linked_orderpositions
++    for rm_id, op_id in qs.filter(id__in=qs.values("reusablemedium_id").annotate(max_id=models.Max('id')).values('max_id')).values_list("reusablemedium_id", "orderposition_id"):
++        obj = ReusableMedium(
++            id=rm_id,
++            linked_orderposition_id=op_id,
++        )
++        objs.append(obj)
++
++    ReusableMedium.objects.bulk_update(objs, ['linked_orderposition_id'])
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("pretixbase", "0300_add_reusablemedium_label"),
++    ]
++
++    operations = [
++        # according to the docs, UPDATE FROM should run similarly on sqlite and postgres, but I could not get it to work
++        # so roll back the data migration with code before deleting data from through-table in 0297
++        migrations.RunPython(migrations.RunPython.noop, reverse),
++        migrations.RemoveField(
++            model_name="reusablemedium",
++            name="linked_orderposition",
++        ),
++        # change related_name for new ManyToManyField to previously used linked_media
++        migrations.AlterField(
++            model_name="reusablemedium",
++            name="linked_orderpositions",
++            field=models.ManyToManyField(
++                related_name="linked_media", to="pretixbase.orderposition"
++            ),
++        ),
++    ]
+diff --git a/src/pretix/base/models/media.py b/src/pretix/base/models/media.py
+index d14dbdcc..eabefae5 100644
+--- a/src/pretix/base/models/media.py
++++ b/src/pretix/base/models/media.py
+@@ -72,6 +72,16 @@ class ReusableMedium(LoggedModel):
+         max_length=200,
+         verbose_name=pgettext_lazy('reusable_medium', 'Identifier'),
+     )
++    claim_token = models.CharField(
++        max_length=200,
++        verbose_name=pgettext_lazy('reusable_medium', 'Claim token'),
++        null=True, blank=True
++    )
++    label = models.CharField(
++        max_length=200,
++        verbose_name=pgettext_lazy('reusable_medium', 'Label'),
++        null=True, blank=True
++    )
+ 
+     active = models.BooleanField(
+         verbose_name=_('Active'),
+@@ -89,12 +99,14 @@ class ReusableMedium(LoggedModel):
+         on_delete=models.SET_NULL,
+         verbose_name=_('Customer account'),
+     )
+-    linked_orderposition = models.ForeignKey(
++    linked_orderpositions = models.ManyToManyField(
+         OrderPosition,
+-        null=True, blank=True,
+         related_name='linked_media',
+-        on_delete=models.SET_NULL,
+-        verbose_name=_('Linked ticket'),
++        verbose_name=_('Linked tickets'),
++        help_text=_(
++            'If you link to more than one ticket, make sure there is no overlap in validity. '
++            'If multiple tickets are valid at once, this will lead to failed check-ins.'
++        )
+     )
+     linked_giftcard = models.ForeignKey(
+         GiftCard,
+diff --git a/src/pretix/base/services/orders.py b/src/pretix/base/services/orders.py
+index 8fe2d3f1..cdd0cd2f 100644
+--- a/src/pretix/base/services/orders.py
++++ b/src/pretix/base/services/orders.py
+@@ -3515,8 +3515,8 @@ def signal_listener_issue_media(sender: Event, order: Order, **kwargs):
+                     identifier=mt.generate_identifier(sender.organizer),
+                     active=True,
+                     customer=order.customer,
+-                    linked_orderposition=p,
+                 )
++                rm.linked_orderpositions.add(p)
+                 rm.log_action(
+                     'pretix.reusable_medium.created',
+                     data={
+diff --git a/src/pretix/control/forms/filter.py b/src/pretix/control/forms/filter.py
+index fda7545a..b4ce0164 100644
+--- a/src/pretix/control/forms/filter.py
++++ b/src/pretix/control/forms/filter.py
+@@ -1871,7 +1871,7 @@ class ReusableMediaFilterForm(FilterForm):
+                 Q(identifier__icontains=query)
+                 | Q(customer__identifier__icontains=query)
+                 | Q(customer__external_identifier__istartswith=query)
+-                | Q(linked_orderposition__order__code__icontains=query)
++                | Q(linked_orderpositions__order__code__icontains=query)
+                 | Q(linked_giftcard__secret__icontains=query)
+             )
+ 
+diff --git a/src/pretix/control/forms/organizer.py b/src/pretix/control/forms/organizer.py
+index d0c48fc3..a1e39981 100644
+--- a/src/pretix/control/forms/organizer.py
++++ b/src/pretix/control/forms/organizer.py
+@@ -86,7 +86,7 @@ from pretix.control.forms import ExtFileField, SplitDateTimeField
+ from pretix.control.forms.event import (
+     SafeEventMultipleChoiceField, multimail_validate,
+ )
+-from pretix.control.forms.widgets import Select2
++from pretix.control.forms.widgets import Select2, Select2Multiple
+ from pretix.multidomain.models import KnownDomain
+ from pretix.multidomain.urlreverse import build_absolute_uri
+ 
+@@ -249,6 +249,15 @@ class SafeOrderPositionChoiceField(forms.ModelChoiceField):
+         return f'{op.order.code}-{op.positionid} ({str(op.item) + ((" - " + str(op.variation)) if op.variation else "")})'
+ 
+ 
++class SafeOrderPositionMultipleChoiceField(forms.ModelMultipleChoiceField):
++    def __init__(self, queryset, **kwargs):
++        queryset = queryset.model.all.none()
++        super().__init__(queryset, **kwargs)
++
++    def label_from_instance(self, op):
++        return f'{op.order.code}-{op.positionid} ({str(op.item) + ((" - " + str(op.variation)) if op.variation else "")})'
++
++
+ class EventMetaPropertyForm(I18nModelForm):
+     class Meta:
+         model = EventMetaProperty
+@@ -963,12 +972,12 @@ class ReusableMediumUpdateForm(forms.ModelForm):
+ 
+     class Meta:
+         model = ReusableMedium
+-        fields = ['active', 'expires', 'customer', 'linked_giftcard', 'linked_orderposition', 'notes']
++        fields = ['active', 'expires', 'customer', 'linked_giftcard', 'linked_orderpositions', 'notes']
+         field_classes = {
+             'expires': SplitDateTimeField,
+             'customer': SafeModelChoiceField,
+             'linked_giftcard': SafeModelChoiceField,
+-            'linked_orderposition': SafeOrderPositionChoiceField,
++            'linked_orderpositions': SafeOrderPositionMultipleChoiceField,
+         }
+         widgets = {
+             'expires': SplitDateTimePickerWidget,
+@@ -978,8 +987,8 @@ class ReusableMediumUpdateForm(forms.ModelForm):
+         super().__init__(*args, **kwargs)
+         organizer = self.instance.organizer
+ 
+-        self.fields['linked_orderposition'].queryset = OrderPosition.all.filter(order__event__organizer=organizer).all()
+-        self.fields['linked_orderposition'].widget = Select2(
++        self.fields['linked_orderpositions'].queryset = OrderPosition.all.filter(order__event__organizer=organizer).all()
++        self.fields['linked_orderpositions'].widget = Select2Multiple(
+             attrs={
+                 'data-model-select2': 'generic',
+                 'data-select2-url': reverse('control:organizer.ticket_select2', kwargs={
+@@ -987,8 +996,8 @@ class ReusableMediumUpdateForm(forms.ModelForm):
+                 }),
+             }
+         )
+-        self.fields['linked_orderposition'].widget.choices = self.fields['linked_orderposition'].choices
+-        self.fields['linked_orderposition'].required = False
++        self.fields['linked_orderpositions'].widget.choices = self.fields['linked_orderpositions'].choices
++        self.fields['linked_orderpositions'].required = False
+ 
+         self.fields['linked_giftcard'].queryset = organizer.issued_gift_cards.all()
+         self.fields['linked_giftcard'].widget = Select2(
+@@ -1042,12 +1051,12 @@ class ReusableMediumCreateForm(ReusableMediumUpdateForm):
+ 
+     class Meta:
+         model = ReusableMedium
+-        fields = ['active', 'type', 'identifier', 'expires', 'linked_orderposition', 'linked_giftcard', 'customer', 'notes']
++        fields = ['active', 'type', 'identifier', 'expires', 'linked_orderpositions', 'linked_giftcard', 'customer', 'notes']
+         field_classes = {
+             'expires': SplitDateTimeField,
+             'customer': SafeModelChoiceField,
+             'linked_giftcard': SafeModelChoiceField,
+-            'linked_orderposition': SafeOrderPositionChoiceField,
++            'linked_orderpositions': SafeOrderPositionMultipleChoiceField,
+         }
+         widgets = {
+             'expires': SplitDateTimePickerWidget,
+diff --git a/src/pretix/control/logdisplay.py b/src/pretix/control/logdisplay.py
+index 12fb8455..84e3365a 100644
+--- a/src/pretix/control/logdisplay.py
++++ b/src/pretix/control/logdisplay.py
+@@ -743,6 +743,8 @@ class CoreUserImpersonatedLogEntryType(UserImpersonatedLogEntryType):
+     'pretix.reusable_medium.created': _('The reusable medium has been created.'),
+     'pretix.reusable_medium.created.auto': _('The reusable medium has been created automatically.'),
+     'pretix.reusable_medium.changed': _('The reusable medium has been changed.'),
++    'pretix.reusable_medium.linked_orderposition.added': _('A new ticket has been added to the medium.'),
++    'pretix.reusable_medium.linked_orderposition.removed': _('A ticket has been removed from the medium.'),
+     'pretix.reusable_medium.linked_orderposition.changed': _('The medium has been connected to a new ticket.'),
+     'pretix.reusable_medium.linked_giftcard.changed': _('The medium has been connected to a new gift card.'),
+     'pretix.email.error': _('Sending of an email has failed.'),
+diff --git a/src/pretix/control/templates/pretixcontrol/organizers/reusable_media.html b/src/pretix/control/templates/pretixcontrol/organizers/reusable_media.html
+index 9b96fc8a..6b2f9e2c 100644
+--- a/src/pretix/control/templates/pretixcontrol/organizers/reusable_media.html
++++ b/src/pretix/control/templates/pretixcontrol/organizers/reusable_media.html
+@@ -58,8 +58,8 @@
+                         <a href="?{% url_replace request 'ordering' 'identifier' %}"><i class="fa fa-caret-up"></i></a>
+                     </th>
+                     <th>{% trans "Media type" context "reusable_media" %}
+-                        <a href="?{% url_replace request 'ordering' '-email' %}"><i class="fa fa-caret-down"></i></a>
+-                        <a href="?{% url_replace request 'ordering' 'email' %}"><i class="fa fa-caret-up"></i></a></th>
++                        <a href="?{% url_replace request 'ordering' '-type' %}"><i class="fa fa-caret-down"></i></a>
++                        <a href="?{% url_replace request 'ordering' 'type' %}"><i class="fa fa-caret-up"></i></a></th>
+                     <th>{% trans "Connections" context "reusable_media" %}</th>
+                     <th></th>
+                 </tr>
+@@ -90,13 +90,13 @@
+                                     {% endif %}
+                                 </span>
+                             {% endif %}
+-                            {% if m.linked_orderposition %}
++                            {% for op in m.linked_orderpositions.all %}
+                                 <span class="helper-display-block">
+                                     <span class="fa fa-ticket fa-fw"></span>
+-                                    <a href="{% url "control:event.order" event=m.linked_orderposition.order.event.slug organizer=request.organizer.slug code=m.linked_orderposition.order.code %}">
+-                                        {{ m.linked_orderposition.order.code }}</a>-{{ m.linked_orderposition.positionid }}
++                                    <a href="{% url "control:event.order" event=op.order.event.slug organizer=request.organizer.slug code=op.order.code %}">
++                                        {{ op.order.code }}</a>-{{ op.positionid }}
+                                 </span>
+-                            {% endif %}
++                            {% endfor %}
+                             {% if m.linked_giftcard %}
+                                 <span class="helper-display-block">
+                                     <span class="fa fa-credit-card fa-fw"></span>
+diff --git a/src/pretix/control/templates/pretixcontrol/organizers/reusable_medium.html b/src/pretix/control/templates/pretixcontrol/organizers/reusable_medium.html
+index f53ebbf0..4cac9db0 100644
+--- a/src/pretix/control/templates/pretixcontrol/organizers/reusable_medium.html
++++ b/src/pretix/control/templates/pretixcontrol/organizers/reusable_medium.html
+@@ -26,7 +26,19 @@
+                         <dt>{% trans "Media type" context "reusable_media" %}</dt>
+                         <dd>{{ medium.get_type_display }}</dd>
+                         <dt>{% trans "Identifier" context "reusable_media" %}</dt>
+-                        <dd><code>{{ medium.identifier }}</code></dd>
++                        <dd>
++                            <code id="medium_identifier">{{ medium.identifier }}</code>
++                            <button type="button" class="btn btn-default btn-xs btn-clipboard js-only" data-clipboard-target="#medium_identifier">
++                                <i class="fa fa-clipboard" aria-hidden="true"></i>
++                                <span class="sr-only">{% trans "Copy to clipboard" %}</span>
++                            </button>
++                            {% if medium.type == "barcode" %}
++                            <button type="button" class="btn btn-default btn-xs js-only" data-toggle="qrcode" data-qrcode="{{ medium.identifier }}">
++                                <i class="fa fa-qrcode" aria-hidden="true"></i>
++                                <span class="sr-only">{% trans "Create QR code" %}</span>
++                            </button>
++                            {% endif %}
++                        </dd>
+                         <dt>{% trans "Status" %}</dt>
+                         <dd>
+                             {% if not medium.active %}
+@@ -41,34 +53,34 @@
+                         <dd>
+                             {% if medium.customer %}
+                                 <span class="helper-display-block">
+-                                <span class="fa fa-user fa-fw"></span>
+-                                {% if "organizer.customers:read" in request.orgapermset %}
+-                                    <a href="{% url "control:organizer.customer" organizer=request.organizer.slug customer=medium.customer.identifier %}">
++                                    <span class="fa fa-user fa-fw"></span>
++                                    {% if "organizer.customers:read" in request.orgapermset %}
++                                        <a href="{% url "control:organizer.customer" organizer=request.organizer.slug customer=medium.customer.identifier %}">
++                                            {{ medium.customer }}
++                                        </a>
++                                    {% else %}
+                                         {{ medium.customer }}
+-                                    </a>
+-                                {% else %}
+-                                    {{ medium.customer }}
+-                                {% endif %}
+-                            </span>
++                                    {% endif %}
++                                </span>
+                             {% endif %}
+-                            {% if medium.linked_orderposition %}
++                            {% for op in medium.linked_orderpositions.all %}
+                                 <span class="helper-display-block">
+-                                <span class="fa fa-ticket fa-fw"></span>
+-                                <a href="{% url "control:event.order" event=medium.linked_orderposition.order.event.slug organizer=request.organizer.slug code=medium.linked_orderposition.order.code %}">
+-                                    {{ medium.linked_orderposition.order.code }}</a>-{{ medium.linked_orderposition.positionid }}
+-                            </span>
+-                            {% endif %}
++                                    <span class="fa fa-ticket fa-fw"></span>
++                                    <a href="{% url "control:event.order" event=op.order.event.slug organizer=request.organizer.slug code=op.order.code %}">
++                                        {{ op.order.code }}</a>-{{ op.positionid }}
++                                </span>
++                            {% endfor %}
+                             {% if medium.linked_giftcard %}
+                                 <span class="helper-display-block">
+-                                <span class="fa fa-credit-card fa-fw"></span>
+-                                {% if "organizer.giftcards:read" in request.orgapermset %}
+-                                    <a href="{% url "control:organizer.giftcard" organizer=request.organizer.slug giftcard=medium.linked_giftcard.id %}">
+-                                        {{ medium.linked_giftcard.secret }}
+-                                    </a>
+-                                {% else %}
+-                                    {{ medium.linked_giftcard.secret|slice:":3" }}…
+-                                {% endif %}
+-                            </span>
++                                    <span class="fa fa-credit-card fa-fw"></span>
++                                    {% if "organizer.giftcards:read" in request.orgapermset %}
++                                        <a href="{% url "control:organizer.giftcard" organizer=request.organizer.slug giftcard=medium.linked_giftcard.id %}">
++                                            {{ medium.linked_giftcard.secret }}
++                                        </a>
++                                    {% else %}
++                                        {{ medium.linked_giftcard.secret|slice:":3" }}…
++                                    {% endif %}
++                                </span>
+                             {% endif %}
+                         </dd>
+                         {% if medium.notes %}
+diff --git a/src/pretix/control/views/organizer.py b/src/pretix/control/views/organizer.py
+index e4854b24..c7c64fc9 100644
+--- a/src/pretix/control/views/organizer.py
++++ b/src/pretix/control/views/organizer.py
+@@ -3384,8 +3384,10 @@ class ReusableMediaListView(OrganizerDetailViewMixin, OrganizerPermissionRequire
+ 
+     def get_queryset(self):
+         qs = self.request.organizer.reusable_media.select_related(
+-            'customer', 'linked_orderposition', 'linked_orderposition__order', 'linked_orderposition__order__event',
+-            'linked_giftcard'
++            'customer',
++            'linked_giftcard',
++        ).prefetch_related(
++            Prefetch('linked_orderpositions', queryset=OrderPosition.objects.select_related("order", "order__event"))
+         )
+         if self.filter_form.is_valid():
+             qs = self.filter_form.filter_qs(qs)
+@@ -3433,10 +3435,14 @@ class ReusableMediumCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequ
+     @transaction.atomic
+     def form_valid(self, form):
+         r = super().form_valid(form)
+-        form.instance.log_action('pretix.reusable_medium.created', user=self.request.user, data={
++
++        data = {
+             k: getattr(form.instance, k)
+             for k in form.changed_data
+-        })
++        }
++        if "linked_orderpositions" in data:
++            data["linked_orderpositions"] = data["linked_orderpositions"].values_list("pk", flat=True)
++        form.instance.log_action('pretix.reusable_medium.created', user=self.request.user, data=data)
+         messages.success(self.request, _('Your changes have been saved.'))
+         return r
+ 
+@@ -3461,13 +3467,40 @@ class ReusableMediumUpdateView(OrganizerDetailViewMixin, OrganizerPermissionRequ
+ 
+     @transaction.atomic
+     def form_valid(self, form):
++        prev_linked_ops_pks = list(getattr(self.object, "linked_orderpositions").values_list("pk", flat=True))
++        result = super().form_valid(form)
+         if form.has_changed():
+-            self.object.log_action('pretix.reusable_medium.changed', user=self.request.user, data={
++            data = {
+                 k: getattr(self.object, k)
+                 for k in form.changed_data
+-            })
++            }
++            if "linked_orderpositions" in data:
++                # handle changes to linked_orderpositions separately
++                linked_ops_pks = data["linked_orderpositions"].values_list("pk", flat=True)
++                del data["linked_orderpositions"]
++                for op_pk in prev_linked_ops_pks:
++                    if op_pk not in linked_ops_pks:
++                        self.object.log_action(
++                            'pretix.reusable_medium.linked_orderposition.removed',
++                            user=self.request.user,
++                            data={
++                                'linked_orderposition': op_pk,
++                            }
++                        )
++                for op_pk in linked_ops_pks:
++                    if op_pk not in prev_linked_ops_pks:
++                        self.object.log_action(
++                            'pretix.reusable_medium.linked_orderposition.added',
++                            user=self.request.user,
++                            data={
++                                'linked_orderposition': op_pk,
++                            }
++                        )
++            if data:
++                # log change-action only for changes other than linked_orderpositions
++                self.object.log_action('pretix.reusable_medium.changed', user=self.request.user, data=data)
+         messages.success(self.request, _('Your changes have been saved.'))
+-        return super().form_valid(form)
++        return result
+ 
+     def get_success_url(self):
+         return reverse('control:organizer.reusable_medium', kwargs={

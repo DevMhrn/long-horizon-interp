@@ -1,0 +1,31 @@
+{
+  "pr": 4881,
+  "sha": "d5bccf87264bb5a41e3ec6125d004a45b81f62db",
+  "base": "d768c46fa158098df57a97bfcce42a1e874fd58d",
+  "python": "3.11",
+  "slug": "pretix-outbound-data-sync",
+  "must_turn_green": 5,
+  "must_stay_green": 0,
+  "gold_src_files": [
+    "src/pretix/base/apps.py",
+    "src/pretix/base/datasync/__init__.py",
+    "src/pretix/base/datasync/datasync.py",
+    "src/pretix/base/datasync/sourcefields.py",
+    "src/pretix/base/datasync/utils.py",
+    "src/pretix/base/migrations/0284_ordersyncresult_ordersyncqueue.py",
+    "src/pretix/base/models/datasync.py",
+    "src/pretix/base/services/datasync.py",
+    "src/pretix/base/signals.py",
+    "src/pretix/control/apps.py",
+    "src/pretix/control/forms/mapping.py",
+    "src/pretix/control/logdisplay.py",
+    "src/pretix/control/navigation.py",
+    "src/pretix/control/templates/pretixcontrol/datasync/control_order_info.html",
+    "src/pretix/control/templates/pretixcontrol/datasync/failed_jobs.html",
+    "src/pretix/control/templates/pretixcontrol/datasync/property_mappings_formset.html",
+    "src/pretix/control/templates/pretixcontrol/event/index.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/dashboards.py",
+    "src/pretix/control/views/datasync.py"
+  ]
+}
