@@ -1,0 +1,35 @@
+version = "1.0"
+schema_version = "1.3"
+
+[task]
+name = "collinear-candidate/{{SLUG}}"
+authors = [{ name = "Debashis Maharana", email = "debashismaharana7854@gmail.com" }]
+
+[metadata]
+author_name = "Debashis Maharana"
+author_email = "debashismaharana7854@gmail.com"
+category = "software_engineering"
+tags = ["python", "django", "pretix", "feature-reconstruction", "long-horizon"]
+difficulty_explanation = "DRAFT"
+solution_explanation = "DRAFT"
+verification_explanation = "The verifier replaces the test tree and pytest config with its own copy, removes stray pytest hooks, and runs the graded test files. {{N_TURN}} tests must turn green (the new behavior) and {{N_STAY}} must stay green (no regressions). overall is 1.0 only if all of them pass and no product file tampers with pytest internals."
+expert_time_estimate_hours = 0
+
+[verifier]
+timeout_sec = 900.0
+network_mode = "no-network"
+
+[agent]
+timeout_sec = 7200.0
+user = "agent"
+# The agent may reach its model API only: no GitHub (upstream PRs/commits), no package index.
+network_mode = "allowlist"
+allowed_hosts = ["api.openai.com", "api.anthropic.com"]
+
+[environment]
+build_timeout_sec = 1800.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 10240
+gpus = 0
+network_mode = "public"
