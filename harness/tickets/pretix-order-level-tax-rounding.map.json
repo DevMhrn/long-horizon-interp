@@ -1,0 +1,12 @@
+{
+  "_about": "Which ticket requirement each graded test checks. Authoring only, never shipped. First match wins.",
+  "requirements": {
+    "R1-5 rounding algorithm (apply_rounding)": ["tests.base.test_pricing_rounding::"],
+    "R7 checkout / web order placement": ["test_rounding_line", "test_rounding_sum_by_net"],
+    "R7 payment method / fee change": ["test_change_paymentmethod_with_rounding_change"],
+    "R7 order change manager (add / change price / split)": ["test_add_item_with_rounding", "test_change_price_with_rounding_change", "test_split_with_rounding_change"],
+    "Contract: renamed _recalculate_rounding_total_and_payment_fee": ["test_recalculate_"],
+    "Contract: OrderFee._calculate_tax(event=)": ["test_split_fees"],
+    "R8 REST API (tax_rounding_mode, POS fallback, simulate)": ["tests.api."]
+  }
+}

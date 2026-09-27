@@ -1,0 +1,12 @@
+{
+  "_about": "Which ticket requirement each graded test checks. Authoring only, never shipped. Patterns are matched against the test function name; first match wins.",
+  "requirements": {
+    "R1-2 append vs replace policies (redeem + order creation)": ["test_order_create_add_to_medium", "test_exchange_reuse_or_new_reuse_append", "test_exchange_reuse_exists_append", "test_exchange_reuse_or_new_reuse_replace"],
+    "R3 exchange on redeem (link / create medium, gift card)": ["test_exchange_reuse_or_new_new", "test_exchange_new_not_exists", "test_exchange_create_gift_card"],
+    "R4 exchange required (status exchange)": ["test_exchange_required"],
+    "R5 reusable_media_usage_enforced + already_exchanged": ["test_exchanged_"],
+    "R6 expired media invalid": ["test_exchange_reuse_expired"],
+    "Contract: validation errors + failure reasons": ["test_exchange_incomplete_body", "test_exchange_unknown_media_type", "test_exchange_disabled_media_type", "test_exchange_mismatch_media_type", "test_exchange_no_item_policy", "test_exchange_medium_for_medium", "test_exchange_reuse_not_exists", "test_exchange_rejected_media_identifier", "test_exchange_unsupported_media_type_for_new", "test_exchange_new_exists"],
+    "Contract: Item.MEDIA_POLICY_APPEND_OR_NEW importable (check-in test module loads)": ["tests.api.test_checkinrpc::"]
+  }
+}
