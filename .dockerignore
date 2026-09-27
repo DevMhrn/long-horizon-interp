@@ -1,0 +1,5 @@
+output/
+jobs/
+.git/
+**/__pycache__/
+.env
