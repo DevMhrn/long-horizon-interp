@@ -6,10 +6,10 @@
 
 | | count |
 |---|---|
-| steps | 163 |
+| steps | 164 |
 | commands | 81 |
 | edits | 39 |
-| messages | 43 |
+| messages | 44 |
 | explore | 49 |
 | migrations | 1 |
 | run_tests | 30 |
@@ -266,3 +266,4 @@ from pretix.base.serv  (exit None)
 161. say: All 294 pass. Let me now update the memory since the user hasn't asked for it explicitly. Let me instead verify the copy_data_from correctly preserves default:
 162. run: DJANGO_SETTINGS_MODULE=tests.settings timeout 200 python -m pytest tests/base/test_event_clone.py -q 2>&1 | tail -10  (exit None)
 163. say: Let me summarize the completed work:  **Implementation summary:**  **Part A — Default tax rule & fee taxation** - Added `TaxRule.default` boolean; save() auto-s
+164. say: Let me summarize the completed work:  **Implementation summary:**  **Part A — Default tax rule & fee taxation** - Added `TaxRule.default` boolean; save() auto-s
