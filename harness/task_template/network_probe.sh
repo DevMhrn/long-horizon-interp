@@ -5,7 +5,7 @@ import getpass, socket, subprocess, urllib.request, ssl
 print("user =", getpass.getuser())
 for url in ["https://github.com", "https://api.github.com/repos/pretix/pretix/pulls/6115",
             "https://codeload.github.com/pretix/pretix/zip/refs/heads/master", "https://pypi.org/simple/six/",
-            "https://example.com", "https://www.google.com", "https://api.anthropic.com/v1/messages", "https://api.openai.com/v1/models"]:
+            "https://example.com", "https://www.google.com", "https://api.anthropic.com/v1/messages", "https://api.openai.com/v1/models", "https://openrouter.ai/api/v1/models"]:
     try:
         r = urllib.request.urlopen(url, timeout=15)
         print(f"{url} -> REACHABLE (HTTP {r.status})")

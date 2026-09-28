@@ -25,7 +25,9 @@ RUN arch="$(dpkg --print-architecture)" && \
 # Agent CLI pinned at build time: Harbor skips its own installer when the CLI is already present, so
 # agent setup needs no network and every run uses the same version.
 ARG CODEX_VERSION=0.158.0
-RUN npm install -g "@openai/codex@${CODEX_VERSION}" && codex --version
+ARG CLAUDE_CODE_VERSION=2.1.284
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
+    codex --version && claude --version
 
 RUN pip install --no-cache-dir uv==0.8.22
 

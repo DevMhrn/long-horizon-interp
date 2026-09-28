@@ -21,7 +21,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARBOR = shlex.split(os.environ.get("HARBOR", "uvx --from harbor==0.23.0 harbor"))
-MODEL_APIS = ("api.anthropic.com", "api.openai.com")
+MODEL_APIS = ("api.anthropic.com", "api.openai.com", "openrouter.ai")
 
 
 def main():
