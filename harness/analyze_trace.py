@@ -62,6 +62,8 @@ def normalize(trial):
                             "output": it.get("aggregated_output", "")})
             elif it["type"] == "file_change":
                 out.append({"kind": "edit", "paths": [c["path"] for c in it.get("changes", [])]})
+        elif fmt == "claude" and e.get("type") == "result" and e.get("result"):
+            out.append({"kind": "message", "text": e["result"]})
         elif fmt == "claude" and e.get("type") == "assistant":
             for block in e.get("message", {}).get("content", []):
                 if block.get("type") == "text":

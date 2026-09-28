@@ -48,7 +48,9 @@ def copy(src, dst, compress=False):
         return
     dst.parent.mkdir(parents=True, exist_ok=True)
     if compress:
-        with open(src, "rb") as f, gzip.open(str(dst) + ".gz", "wb", compresslevel=9) as g:
+        # Deterministic gzip (no embedded name or timestamp), so re-collecting unchanged runs is a no-op.
+        with open(src, "rb") as f, open(str(dst) + ".gz", "wb") as raw, \
+                gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as g:
             shutil.copyfileobj(f, g)
     else:
         shutil.copy(src, dst)
@@ -93,7 +95,11 @@ def main():
     args = ap.parse_args()
     task = ROOT / "tasks" / args.slug
     ev = task / "evidence"
+    readme = (ev / "README.md").read_text() if (ev / "README.md").exists() else None
     shutil.rmtree(ev, ignore_errors=True)
+    ev.mkdir(parents=True)
+    if readme is not None:  # hand-written index survives a refresh
+        (ev / "README.md").write_text(readme)
     gates = ev / "gates"
     copy(task / ".package_report.json", gates / "package_report.json")
     copy(ROOT / "output" / "redteam" / f"{args.slug}.json", gates / "redteam.json")
