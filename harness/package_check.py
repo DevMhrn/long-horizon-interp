@@ -168,8 +168,9 @@ def run(task):
     problems = []
     if "DRAFT" in instr:
         problems.append("instruction is still a DRAFT")
-    if pack.get("pr") and re.search(rf"#?\b{pack['pr']}\b", instr):
-        problems.append(f"mentions PR number {pack['pr']}")
+    for number in pack.get("prs") or ([pack["pr"]] if pack.get("pr") else []):
+        if re.search(rf"#?\b{number}\b", instr):
+            problems.append(f"mentions PR number {number}")
     for sha in (pack.get("sha", ""), pack.get("base", "")):
         if sha and re.search(rf"\b{sha[:7]}", instr):
             problems.append(f"mentions commit {sha[:7]}")
@@ -200,6 +201,12 @@ def run(task):
     all_graded_words = set()
     for src in sources.values():
         all_graded_words |= set(WORD.findall(src))
+    with tarfile.open(task / "tests" / "pristine.tar.gz") as tar:
+        graded_modules = {".".join(t.split("::")[0].split(".")[:3]) for t in graded}
+        for m in tar.getmembers():
+            mod = ".".join(pathlib.PurePath(m.name).relative_to("src").with_suffix("").parts) if m.name.startswith("src/") else ""
+            if m.isfile() and m.name.endswith(".py") and any(g.startswith(mod) for g in graded_modules if mod):
+                all_graded_words |= set(WORD.findall(tar.extractfile(m).read().decode("utf-8", "ignore")))
     base = pack.get("base")
     new_in_gold = gold_words - existing_at(base, gold_words) if base else set()
     instr_words = set(WORD.findall(instr)) | {s for s in re.findall(r"`([^`]+)`", instr)}
@@ -219,7 +226,9 @@ def run(task):
     # A test relies on something "new" if it appears in the gold patch's added lines and nowhere in the
     # product code at the base commit: an identifier, a field name, or a literal such as an error text.
     # Short all-lowercase fragments ("ness", "able") are tokenizer noise, not contract names.
-    in_gold = {w for w in test_words if w.lower() not in COMMON and w in added
+    added_words = set(re.findall(r"\w+", added))
+    in_gold = {w for w in test_words if w.lower() not in COMMON
+               and (w in added_words if re.fullmatch(r"\w+", w) else w in added)
                and not (len(w) < 5 and w.isalpha() and w.islower())}
     contract_needed = sorted(in_gold - existing_at(base, in_gold)) if base else []
     unstated = [w for w in contract_needed if w not in instr]

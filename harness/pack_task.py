@@ -47,11 +47,11 @@ def make_executable(path):
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def pack(pr, slug, repo=DEFAULT_REPO, force=False):
-    screen_dir = SCREENS / f"pr{pr}"
+def pack(pr, slug, repo=DEFAULT_REPO, force=False, screen=None, prs=None, upstream=None):
+    screen_dir = SCREENS / (screen or f"pr{pr}")
     screen = json.loads((screen_dir / "screen.json").read_text())
     if screen["verdict"] not in ("ok", "thin"):
-        raise SystemExit(f"PR #{pr} verdict is {screen['verdict']}; only ok/thin screens are packed")
+        raise SystemExit(f"{screen_dir.name} verdict is {screen['verdict']}; only ok/thin screens are packed")
     sha, base = screen["sha"], screen["base"]
     out = TASKS / slug
     if out.exists():
@@ -64,8 +64,20 @@ def pack(pr, slug, repo=DEFAULT_REPO, force=False):
     images = json.loads((HARNESS / "env" / "pretix" / "python_images.json").read_text())
     py = ci_python(repo, base, images)
     shutil.copy(lock_path("pretix", base), out / "environment" / "requirements.lock")
-    (out / "environment" / "Dockerfile").write_text(render(
-        (TEMPLATES / "Dockerfile").read_text(), PYTHON_IMAGE=images[py], UPSTREAM=UPSTREAM, BASE_SHA=base))
+    dockerfile = render((TEMPLATES / "Dockerfile").read_text(), PYTHON_IMAGE=images[py], UPSTREAM=UPSTREAM, BASE_SHA=base)
+    if upstream:
+        # Chain task: the base commit only exists locally. Fetch the real upstream commit it was derived
+        # from and apply the feature-removal patch in the same layer, deleting the patch right away.
+        removal = subprocess.run(["git", "-C", str(repo), "diff", "--binary", upstream, base],
+                                 capture_output=True, check=True).stdout
+        (out / "environment" / "feature_removal.patch").write_bytes(removal)
+        dockerfile = dockerfile.replace(f"git fetch -q --depth 1 {UPSTREAM} {base}", f"git fetch -q --depth 1 {UPSTREAM} {upstream}")
+        dockerfile = dockerfile.replace(
+            "    git checkout -q FETCH_HEAD && \\\n    rm -rf /app/.git",
+            "    git checkout -q FETCH_HEAD && \\\n    git apply --whitespace=nowarn /tmp/feature_removal.patch && \\\n"
+            "    rm -rf /app/.git /tmp/feature_removal.patch")
+        dockerfile = dockerfile.replace("RUN git init -q /app", "COPY feature_removal.patch /tmp/feature_removal.patch\nRUN git init -q /app")
+    (out / "environment" / "Dockerfile").write_text(dockerfile)
 
     shutil.copy(screen_dir / "gold.patch", out / "solution" / "gold.patch")
     shutil.copy(TEMPLATES / "solve.sh", out / "solution" / "solve.sh")
@@ -108,21 +120,24 @@ def pack(pr, slug, repo=DEFAULT_REPO, force=False):
     (out / "instruction.md").write_text(ticket.read_text() if ticket.exists() else (TEMPLATES / "instruction.md").read_text())
 
     (out / ".pack.json").write_text(json.dumps({
-        "pr": pr, "sha": sha, "base": base, "python": py, "slug": slug,
+        "pr": pr, "prs": prs or [pr], "sha": sha, "base": base, "python": py, "slug": slug,
         "must_turn_green": len(must_turn), "must_stay_green": len(must_stay),
         "gold_src_files": screen["src_files"],
     }, indent=2))
-    print(f"packed PR #{pr} -> {out}  (python {py}, {len(must_turn)} must_turn_green, {len(must_stay)} must_stay_green)")
+    print(f"packed {screen_dir.name} -> {out}  (python {py}, {len(must_turn)} must_turn_green, {len(must_stay)} must_stay_green)")
     return out
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pr", type=int, required=True)
+    ap.add_argument("--pr", type=int, help="single PR (screen output/screens/pr<N>)")
+    ap.add_argument("--screen", help="screen directory name for a chain, e.g. chainA")
+    ap.add_argument("--prs", type=int, nargs="*", help="member PRs of a chain (for leak checks)")
+    ap.add_argument("--upstream", help="chain only: public commit the local base was derived from")
     ap.add_argument("--slug", required=True)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
-    pack(args.pr, args.slug, force=args.force)
+    pack(args.pr or (args.prs or [None])[-1], args.slug, force=args.force, screen=args.screen, prs=args.prs, upstream=args.upstream)
 
 
 if __name__ == "__main__":

@@ -135,7 +135,9 @@ def analyze(trial):
         details = json.loads((trial / "verifier" / "details.json").read_text())
     vs_reality = {}
     mapping = ROOT / "harness" / "tickets" / f"{slug}.map.json"
-    if mapping.exists() and (task_dir / "tests" / "must_turn_green.json").exists():
+    if not details:
+        vs_reality = {"(no verifier result: the run did not reach grading)": {"tests": 0, "failed": 0}}
+    elif mapping.exists() and (task_dir / "tests" / "must_turn_green.json").exists():
         reqs = json.loads(mapping.read_text())["requirements"]
         must_turn = json.loads((task_dir / "tests" / "must_turn_green.json").read_text())
         failed = set(details.get("failed_must_turn_green", []))
