@@ -1,0 +1,27 @@
+{
+  "job": "claude-code-claude-opus-4.7-1790625274",
+  "trial": "pretix-tax-compliance-chain__WWUwegP",
+  "agent": "claude-code",
+  "agent_version": "2.1.284",
+  "model_requested": "anthropic/claude-opus-4.7",
+  "model_reported_by_trajectory": [
+    "anthropic/claude-opus-4.7"
+  ],
+  "agent_kwargs": null,
+  "reward": {
+    "overall": 0.0,
+    "must_turn_green": 0.9729,
+    "must_stay_green": 1.0,
+    "integrity": 1.0
+  },
+  "exception": null,
+  "agent_started": "2026-09-28T19:54:40.556756Z",
+  "agent_finished": "2026-09-28T20:19:22.093596Z",
+  "steps": 182,
+  "tool_calls": 177,
+  "tokens": {
+    "n_input_tokens": 22648582,
+    "n_cache_tokens": 22437908,
+    "n_output_tokens": 61305
+  }
+}

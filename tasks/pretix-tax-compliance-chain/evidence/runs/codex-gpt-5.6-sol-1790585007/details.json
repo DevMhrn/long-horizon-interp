@@ -1,0 +1,21 @@
+{
+  "failed_must_turn_green": [
+    "tests.api.test_order_create::test_order_create_simulate",
+    "tests.api.test_orders::test_order_mark_canceled_pending_fee_not_allowed",
+    "tests.api.test_orders::test_order_mark_paid_canceled_keep_fee",
+    "tests.base.test_cancelevent.EventCancelTests::test_cancel_do_not_refund",
+    "tests.base.test_cancelevent.EventCancelTests::test_cancel_refund_paid_only_manual",
+    "tests.base.test_cancelevent.EventCancelTests::test_cancel_refund_paid_partial_no_manual",
+    "tests.base.test_cancelevent.EventCancelTests::test_cancel_refund_paid_partial_to_manual",
+    "tests.base.test_cancelevent.EventCancelTests::test_cancel_refund_partially_paid_with_fees",
+    "tests.base.test_orders.OrderChangeManagerTests::test_split_with_rounding_change",
+    "tests.presale.test_checkout.CheckoutTestCase::test_rounding_sum_by_net"
+  ],
+  "failed_must_stay_green": [
+    "tests.control.test_events.EventsTest::test_payment_settings",
+    "tests.control.test_events.EventsTest::test_payment_settings_last_date_payment_after_presale_end",
+    "tests.control.test_events.EventsTest::test_payment_settings_provider",
+    "tests.control.test_events.EventsTest::test_payment_settings_relative_date_payment_after_presale_end"
+  ],
+  "tampered_files": []
+}

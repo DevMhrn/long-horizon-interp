@@ -1,0 +1,36 @@
+{
+  "task": "pretix-tax-compliance-chain",
+  "repeat": 1,
+  "ok": true,
+  "checks": {
+    "oracle_all_1": true,
+    "nop_all_0": true,
+    "no_errors": true
+  },
+  "runs": {
+    "oracle": [
+      {
+        "job": "oracle0-1790624978",
+        "trials": [
+          {
+            "trial": "pretix-tax-compliance-chain__5H75zBW",
+            "overall": 1.0,
+            "error": null
+          }
+        ]
+      }
+    ],
+    "nop": [
+      {
+        "job": "nop0-1790625043",
+        "trials": [
+          {
+            "trial": "pretix-tax-compliance-chain__W7u2vrW",
+            "overall": 0.0,
+            "error": null
+          }
+        ]
+      }
+    ]
+  }
+}

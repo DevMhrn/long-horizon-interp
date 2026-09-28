@@ -1,0 +1,11 @@
+{
+  "failed_must_turn_green": [
+    "tests.base.test_orders.OrderChangeManagerTests::test_split_with_rounding_change",
+    "tests.presale.test_checkout.CheckoutTestCase::test_rounding_sum_by_net",
+    "tests.presale.test_checkout.CheckoutTestCase::test_rounding_sum_by_net_keep_gross",
+    "tests.presale.test_checkout.CheckoutTestCase::test_rounding_sum_by_net_with_payment_fee",
+    "tests.presale.test_checkout.CheckoutTestCase::test_rounding_sum_by_net_with_payment_fee_that_makes_card_insufficient"
+  ],
+  "failed_must_stay_green": [],
+  "tampered_files": []
+}

@@ -1,0 +1,24 @@
+{
+  "task": "pretix-reusable-media-exchange",
+  "ok": true,
+  "checks": {
+    "non_model_hosts_blocked": true,
+    "model_apis_reachable": true,
+    "runs_as_agent": true
+  },
+  "probe": [
+    "user = agent",
+    "https://github.com -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://api.github.com/repos/pretix/pretix/pulls/6115 -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://codeload.github.com/pretix/pretix/zip/refs/heads/master -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://pypi.org/simple/six/ -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://example.com -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://www.google.com -> BLOCKED (URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:103)",
+    "https://api.anthropic.com/v1/messages -> REACHABLE (HTTP 405)",
+    "https://api.openai.com/v1/models -> REACHABLE (HTTP 401)",
+    "dns github.com -> 20.207.73.82",
+    "dns pypi.org -> 151.101.0.223",
+    "dns api.anthropic.com -> 160.79.104.10",
+    "git ls-remote github -> BLOCKED (fatal: unable to access 'https://github.com/pretix/pretix.git/': GnuTLS, handshake failed: The TLS connection was non-pr)"
+  ]
+}

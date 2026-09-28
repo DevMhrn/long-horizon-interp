@@ -1,0 +1,22 @@
+{
+  "job": "codex-gpt-5.6-sol-1790583538",
+  "trial": "pretix-tax-compliance-chain__hUT4DaM",
+  "agent": "codex",
+  "agent_version": null,
+  "model_requested": "openai/gpt-5.6-sol",
+  "model_reported_by_trajectory": null,
+  "agent_kwargs": {
+    "reasoning_effort": "high"
+  },
+  "reward": null,
+  "exception": "NonZeroAgentExitCodeError",
+  "agent_started": null,
+  "agent_finished": null,
+  "steps": null,
+  "tool_calls": null,
+  "tokens": {
+    "n_input_tokens": null,
+    "n_cache_tokens": null,
+    "n_output_tokens": null
+  }
+}

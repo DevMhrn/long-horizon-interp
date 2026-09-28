@@ -1,0 +1,44 @@
+Traceback (most recent call last):
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/trial/trial.py", line 415, in run
+    await self._prepare()
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/trial/trial.py", line 459, in _prepare
+    await self._setup_agent()
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/trial/trial.py", line 1574, in _setup_agent
+    await asyncio.wait_for(
+    ...<2 lines>...
+    )
+  File "/Users/devmhrn/.local/share/uv/python/cpython-3.13.9-macos-aarch64-none/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/agents/installed/base.py", line 1050, in setup
+    await self.install(environment)
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/agents/installed/codex.py", line 348, in install
+    await self.ensure_system_dependencies(
+        environment, ("curl", "bash", "nodejs", "npm", "ripgrep")
+    )
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/agents/installed/base.py", line 751, in ensure_system_dependencies
+    await self.exec_as_root(environment, command=command, env=env)
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/agents/installed/base.py", line 982, in exec_as_root
+    return await self._exec(
+           ^^^^^^^^^^^^^^^^^
+        environment, command, user="root", env=env, cwd=cwd, timeout_sec=timeout_sec
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/devmhrn/.cache/uv/archive-v0/azZJPL9vq3EHRsAb/lib/python3.13/site-packages/harbor/agents/installed/base.py", line 962, in _exec
+    raise self._classify_exec_error(command, result)
+harbor.agents.installed.base.NonZeroAgentExitCodeError: Command failed (exit 100): apt-get update && apt-get install -y curl bash nodejs npm ripgrep
+stdout: Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
+Get:2 http://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+Get:3 http://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+Get:4 http://deb.debian.org/debian trix ... [73164 chars truncated] ... 1.1-1+b4 [1247 kB]
+Get:547 http://deb.debian.org/debian trixie/main arm64 x11-utils arm64 7.7+7 [175 kB]
+Get:548 http://deb.debian.org/debian trixie/main arm64 x11-xserver-utils arm64 7.7+11 [156 kB]
+Get:549 http://deb.debian.org/debian trixie/main arm64 xdg-user-dirs arm64 0.18-2 [53.2 kB]
+Get:550 http://deb.debian.org/debian trixie/main arm64 libegl1 arm64 1.7.0-1+b2 [34.0 kB]
+Get:551 http://deb.debian.org/debian trixie/main arm64 zutty arm64 0.16.2.20241020+dfsg1-1 [166 kB]
+Fetched 120 MB in 16s (7422 kB/s)
+E: Failed to fetch http://deb.debian.org/debian/pool/main/n/node-isexe/node-isexe_2.0.0%2b%7e2.0.1-5_all.deb  403  Forbidden [IP: 151.101.2.132 80]
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+
+stderr: None

@@ -1,0 +1,36 @@
+{
+  "task": "pretix-order-level-tax-rounding",
+  "repeat": 1,
+  "ok": true,
+  "checks": {
+    "oracle_all_1": true,
+    "nop_all_0": true,
+    "no_errors": true
+  },
+  "runs": {
+    "oracle": [
+      {
+        "job": "oracle0-1790536382",
+        "trials": [
+          {
+            "trial": "pretix-order-level-tax-rounding__KuxxXUU",
+            "overall": 1.0,
+            "error": null
+          }
+        ]
+      }
+    ],
+    "nop": [
+      {
+        "job": "nop0-1790536430",
+        "trials": [
+          {
+            "trial": "pretix-order-level-tax-rounding__8r6nspK",
+            "overall": 0.0,
+            "error": null
+          }
+        ]
+      }
+    ]
+  }
+}

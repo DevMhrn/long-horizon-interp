@@ -1,0 +1,71 @@
+{
+  "task": "tasks/pretix-tax-compliance-chain",
+  "ok": true,
+  "checks": [
+    {
+      "check": "files",
+      "ok": true,
+      "details": {
+        "missing": [],
+        "not_executable": []
+      }
+    },
+    {
+      "check": "task_toml",
+      "ok": true,
+      "details": {
+        "problems": []
+      }
+    },
+    {
+      "check": "dockerfile",
+      "ok": true,
+      "details": {
+        "problems": []
+      }
+    },
+    {
+      "check": "gold_no_tests",
+      "ok": true,
+      "details": {
+        "files": []
+      }
+    },
+    {
+      "check": "secrets",
+      "ok": true,
+      "details": {
+        "hits": []
+      }
+    },
+    {
+      "check": "size",
+      "ok": true,
+      "details": {
+        "mb": 1.1
+      }
+    },
+    {
+      "check": "instruction",
+      "ok": true,
+      "details": {
+        "problems": []
+      }
+    },
+    {
+      "check": "mechanism_leak",
+      "ok": true,
+      "details": {
+        "identifiers": []
+      }
+    },
+    {
+      "check": "contract",
+      "ok": true,
+      "details": {
+        "needed": 12,
+        "unstated": []
+      }
+    }
+  ]
+}

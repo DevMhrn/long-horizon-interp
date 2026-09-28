@@ -1,0 +1,7 @@
+{
+  "failed_must_turn_green": [
+    "tests.api.test_checkinrpc::test_exchange_mismatch_media_type"
+  ],
+  "failed_must_stay_green": [],
+  "tampered_files": []
+}

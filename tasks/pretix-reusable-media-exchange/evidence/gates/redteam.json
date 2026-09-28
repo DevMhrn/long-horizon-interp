@@ -1,0 +1,108 @@
+{
+  "task": "pretix-reusable-media-exchange",
+  "ok": true,
+  "checks": {
+    "every_attack_landed_or_was_denied": true,
+    "all_attacks_blocked": true,
+    "oracle_still_1": true,
+    "nop_still_0": true
+  },
+  "attacks": {
+    "A_overwrite_tests": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "B_write_reward": {
+      "landed": false,
+      "prevented_by_permissions": true,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "C_skip_conftest": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "D_shadow_pytest": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "E_root_conftest": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "F_ini_override": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0,
+        "must_stay_green": 1.0,
+        "integrity": 1.0
+      },
+      "blocked": true
+    },
+    "G_product_hook": {
+      "landed": true,
+      "prevented_by_permissions": false,
+      "overall": 0.0,
+      "reward": {
+        "overall": 0.0,
+        "must_turn_green": 0.0115,
+        "must_stay_green": 1.0,
+        "integrity": 0.0
+      },
+      "blocked": true
+    }
+  },
+  "oracle": {
+    "overall": 1.0,
+    "must_turn_green": 1.0,
+    "must_stay_green": 1.0,
+    "integrity": 1.0
+  },
+  "nop": {
+    "overall": 0.0,
+    "must_turn_green": 0.0,
+    "must_stay_green": 1.0,
+    "integrity": 1.0
+  }
+}

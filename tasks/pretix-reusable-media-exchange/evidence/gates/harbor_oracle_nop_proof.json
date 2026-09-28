@@ -1,0 +1,36 @@
+{
+  "task": "pretix-reusable-media-exchange",
+  "repeat": 1,
+  "ok": true,
+  "checks": {
+    "oracle_all_1": true,
+    "nop_all_0": true,
+    "no_errors": true
+  },
+  "runs": {
+    "oracle": [
+      {
+        "job": "oracle0-1790525281",
+        "trials": [
+          {
+            "trial": "pretix-reusable-media-exchange__7cqAqq8",
+            "overall": 1.0,
+            "error": null
+          }
+        ]
+      }
+    ],
+    "nop": [
+      {
+        "job": "nop0-1790525336",
+        "trials": [
+          {
+            "trial": "pretix-reusable-media-exchange__PdvhT5M",
+            "overall": 0.0,
+            "error": null
+          }
+        ]
+      }
+    ]
+  }
+}

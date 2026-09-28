@@ -1,0 +1,61 @@
+{
+  "sha": "3e972eddbf117a17da33e730f9e3fc8bf4f59306",
+  "base": "cdeb1e86bd98d095e742f9b9b9701b634b0f1aa8",
+  "image": "pretix-env:pr5019-base",
+  "repeat": 3,
+  "verdict": "ok",
+  "test_files": [
+    "src/tests/api/test_order_create.py",
+    "src/tests/api/test_orders.py",
+    "src/tests/base/test_orders.py",
+    "src/tests/base/test_pricing_rounding.py",
+    "src/tests/base/test_taxrules.py",
+    "src/tests/presale/test_checkout.py",
+    "src/tests/presale/test_orders.py"
+  ],
+  "src_files": [
+    "src/pretix/api/serializers/event.py",
+    "src/pretix/api/serializers/order.py",
+    "src/pretix/api/views/order.py",
+    "src/pretix/base/migrations/0293_cartposition_price_includes_rounding_correction_and_more.py",
+    "src/pretix/base/models/orders.py",
+    "src/pretix/base/payment.py",
+    "src/pretix/base/services/cancelevent.py",
+    "src/pretix/base/services/cart.py",
+    "src/pretix/base/services/orders.py",
+    "src/pretix/base/services/pricing.py",
+    "src/pretix/base/settings.py",
+    "src/pretix/control/forms/event.py",
+    "src/pretix/control/navigation.py",
+    "src/pretix/control/templates/pretixcontrol/event/settings.html",
+    "src/pretix/control/templates/pretixcontrol/event/tax.html",
+    "src/pretix/control/templates/pretixcontrol/event/tax_index.html",
+    "src/pretix/control/templates/pretixcontrol/order/index.html",
+    "src/pretix/control/templates/pretixcontrol/order/transactions.html",
+    "src/pretix/control/urls.py",
+    "src/pretix/control/views/event.py",
+    "src/pretix/control/views/orders.py",
+    "src/pretix/plugins/paypal2/views.py",
+    "src/pretix/presale/checkoutflow.py",
+    "src/pretix/presale/views/__init__.py",
+    "src/pretix/presale/views/order.py"
+  ],
+  "touches_dependencies": false,
+  "counts": {
+    "must_turn_green": 33,
+    "must_stay_green": 692,
+    "broken_by_gold": 0,
+    "excluded": 1,
+    "flaky": 0
+  },
+  "why_red_before": {
+    "missing_feature": 11,
+    "behavioral": 9,
+    "not_collected": 13
+  },
+  "broken_by_gold": [],
+  "excluded": [
+    "::tests.base.test_pricing_rounding"
+  ],
+  "flaky": []
+}
