@@ -1,0 +1,16 @@
+{
+  "_about": "Which ticket part each graded test checks. Authoring only, never shipped. First match wins.",
+  "requirements": {
+    "C rounding algorithm (apply_rounding)": ["tests.base.test_pricing_rounding::"],
+    "C checkout / web order placement": ["test_rounding_line", "test_rounding_sum_by_net"],
+    "C payment method change": ["test_change_paymentmethod_with_rounding_change"],
+    "C order change manager (add / change price / split)": ["test_add_item_with_rounding", "test_change_price_with_rounding_change", "test_split_with_rounding_change"],
+    "C REST API rounding": ["test_order_create_rounding", "test_order_create_simulate"],
+    "B cancellation dry run": ["tests.base.test_cancelevent"],
+    "A fee splitting": ["test_split_fees", "test_split_paid_payment_fees", "test_split_pending_payment_fees", "test_split_reverse_charge"],
+    "A cancellation fee taxation": ["test_order_cancel_paid_keep_fee", "test_order_mark_canceled_pending_fee_with_tax"],
+    "A default tax rule (API/backend/copy)": ["tests.api.test_taxrules", "tests.control.test_taxrates", "test_create_event_clone", "test_create_event_copy", "test_copy"],
+    "A payment fee taxation": ["test_payment_fee_calculation", "test_pending_free_order_stays_pending"],
+    "Carried: existing tests that need TaxRule(default=...)": ["tests."]
+  }
+}
