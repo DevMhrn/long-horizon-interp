@@ -17,6 +17,10 @@ This folder holds everything needed to check that this task is **solvable, harde
 | `gates/harbor_oracle_nop_proof.json` | `harbor run -a oracle` → 1.0 and `harbor run -a nop` → 0.0, each repeated 3 times, no errors. |
 | `gates/clean_build_arm64.json`, `gates/clean_build_amd64.json` | Clean-machine proof on both platforms: `environment/` built with `--no-cache --pull`, then nop → 0.0 and oracle → 1.0 with plain Docker. amd64 is a real `x86_64` image with 0 cached layers, built on Apple Silicon via emulation. Script: `harness/verify_clean_build.sh`. |
 
+## Long-horizon profile
+
+`long_horizon_profile.json` summarises the task's scope (gold change, layers, graded tests) and, for each counted run, the agent time, steps, tool calls, files and layers changed, test runs, graded test files run and tokens, taken from the files below.
+
 ## Model runs
 
 All three models that actually worked on the task scored **overall 0.0**.

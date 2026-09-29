@@ -242,6 +242,38 @@ All runs used Harbor 0.23.0. The harness CLIs are pinned in the image (Codex 0.1
 | **Claude Opus 4.7** | Claude Code, via OpenRouter | final | **0.0** | 503 / 517 | 0 | 24.7 min | 182 / 177 | 30 |
 | GPT-5.6-sol, reasoning effort high | Codex, direct | earlier draft | **0.0** | 507 / 517 | 4 | 18.9 min | 184 / 178 | 20 |
 
+### Long-horizon profile
+
+**What the task requires** (from the gold change and the grader):
+
+| Measure | Value |
+|---|---|
+| Linked subgoals | 3 parts (A default tax rule and fee taxation, B cancellation dry run, C order-level rounding), which feed into each other |
+| Gold change | 42 files, +1,763 / −405 lines |
+| Layers touched by the gold change | admin UI (18 files), services (5), API (4), migrations (4), models (3), shop checkout (3), settings, plugins, other (3) |
+| Graded tests | 517 must turn green and 1,430 must stay green, across 14 test files |
+| Ticket | 1,227 words |
+| Expert estimate | about 20 hours |
+
+**What the attempts took** (from each run's trajectory and trace analysis in `evidence/runs/`):
+
+| | GPT-5.5-high | Claude Opus 4.7 | GPT-5.6-sol |
+|---|---|---|---|
+| Agent time | 17.1 min | 24.7 min | 18.9 min |
+| Steps (trajectory turns) | 155 | 182 | 184 |
+| Tool calls | 200 | 177 | 178 |
+| Product files changed | 17 | 13 | 18 |
+| Layers changed | 6 | 6 | 7 |
+| Edit operations | 67 | 39 | 40 |
+| Test runs by the agent | 29 | 30 | 20 |
+| Graded test files it ran | 8 of 14 | 10 of 14 | 9 of 14 |
+| Wrote a migration | yes | yes | yes |
+| Tokens in / out | 20.6M / 55k | 22.6M / 61k | 27.0M / 53k |
+| New tests passed | 494 / 517 | 503 / 517 | 507 / 517 |
+| Hit the 2-hour limit | no | no | no |
+
+For comparison, the single-PR probe #6115 took GPT-5.5-high 5.5 minutes and 51 steps.
+
 ### Where each model failed (graded new tests, grouped by instruction requirement)
 
 | Requirement | GPT-5.5 | Opus 4.7 | GPT-5.6-sol |

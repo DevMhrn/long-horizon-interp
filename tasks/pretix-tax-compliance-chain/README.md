@@ -33,6 +33,26 @@ The first two rows are the brief's target models, run on the final instruction. 
 
 The oracle scores 1.0 and an empty agent scores 0.0. Every counted failure maps to a requirement stated in `instruction.md`. See **[RUN_REPORT.md](RUN_REPORT.md)** for the full story, checks, fairness audit and failure analysis, and **[evidence/](evidence/README.md)** for the raw runs.
 
+## Long-horizon profile
+
+| Task scope | |
+|---|---|
+| Linked subgoals | 3 (A, B, C above), feeding into each other |
+| Gold change | 42 files, +1,763 / −405 lines, across admin UI, services, API, migrations, models, shop checkout and settings |
+| Graded tests | 517 must turn green, 1,430 must stay green, in 14 test files |
+| Expert estimate | about 20 hours |
+
+| Per run | GPT-5.5-high | Claude Opus 4.7 | GPT-5.6-sol |
+|---|---|---|---|
+| Agent time | 17.1 min | 24.7 min | 18.9 min |
+| Steps / tool calls | 155 / 200 | 182 / 177 | 184 / 178 |
+| Product files changed (layers) | 17 (6) | 13 (6) | 18 (7) |
+| Test runs by the agent | 29 | 30 | 20 |
+| Graded test files it ran | 8 of 14 | 10 of 14 | 9 of 14 |
+| Hit the 2-hour limit | no | no | no |
+
+Details and sources: RUN_REPORT §9 and `evidence/long_horizon_profile.json`.
+
 ## Layout
 
 ```

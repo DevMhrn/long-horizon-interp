@@ -11,7 +11,7 @@ Long-horizon, hard-but-fair agent tasks built from real feature work on [pretix]
 |---|---|
 | Task | `collinear-candidate/pretix-tax-compliance-chain` |
 | Zip | [`submission/pretix-tax-compliance-chain.zip`](submission/pretix-tax-compliance-chain.zip) |
-| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `6630406b5ebad99685433e8e917246e514f6c658cd310d4e39ed9969315e06f3` |
+| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `a09749ef18c4d04515699955e61404fae761fe32f4d69b07034f4e8f3f43a9dd` |
 | Frozen task image (proof of what was tested) | [`ghcr.io/devmhrn/pretix-tax-compliance-chain:v1`](https://github.com/users/DevMhrn/packages/container/package/pretix-tax-compliance-chain), multi-arch digest `sha256:611d41d51c79cc1eb17c2f10698ae3f2b5e4460e58b32574c7161f159475d3de`. It contains amd64 `sha256:39f48b58…` and arm64 `sha256:09fb25a2…`, the exact images verified in [`evidence/gates/clean_build_*.json`](tasks/pretix-tax-compliance-chain/evidence/gates/). |
 | Browsable copy | [`tasks/pretix-tax-compliance-chain/`](tasks/pretix-tax-compliance-chain/), identical to the zip contents |
 
@@ -19,6 +19,17 @@ Long-horizon, hard-but-fair agent tasks built from real feature work on [pretix]
 - **GPT-5.5-high (Codex) and Claude Opus 4.7 (Claude Code) both score 0.0**, and so does GPT-5.6-sol. Every counted failure maps to a requirement stated in the instruction.
 - The oracle scores 1.0 and an empty agent scores 0.0, each repeated 3 times under Harbor.
 - The clean build is verified on **linux/amd64 and linux/arm64**.
+
+**Long-horizon profile** (details in the RUN_REPORT, §9):
+
+| | GPT-5.5-high | Claude Opus 4.7 | GPT-5.6-sol |
+|---|---|---|---|
+| Agent time | 17.1 min | 24.7 min | 18.9 min |
+| Steps / tool calls | 155 / 200 | 182 / 177 | 184 / 178 |
+| Product files changed | 17 | 13 | 18 |
+| Test runs by the agent | 29 | 30 | 20 |
+
+The gold change is 42 files (+1,763 / −405 lines) across 3 linked subgoals, graded by 517 must-turn-green and 1,430 must-stay-green tests.
 
 **Read next:**
 - [task README](tasks/pretix-tax-compliance-chain/README.md): a one-page overview
