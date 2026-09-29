@@ -11,11 +11,11 @@ Long-horizon, hard-but-fair agent tasks built from real feature work on [pretix]
 |---|---|
 | Task | `collinear-candidate/pretix-tax-compliance-chain` |
 | Zip | [`submission/pretix-tax-compliance-chain.zip`](submission/pretix-tax-compliance-chain.zip) |
-| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `89723f73f71a1a03bb247a6654626c0e79d9e865de03d69916a01ee30a2e36ea` |
+| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `873524d838f5c85535a1b0c5e2fb6031ed46cc12cedc78b946246bfd1b5c25ab` |
 | Frozen task image (proof of what was tested) | [`ghcr.io/devmhrn/pretix-tax-compliance-chain:v1`](https://github.com/users/DevMhrn/packages/container/package/pretix-tax-compliance-chain), multi-arch digest `sha256:611d41d51c79cc1eb17c2f10698ae3f2b5e4460e58b32574c7161f159475d3de`. It contains amd64 `sha256:39f48b58…` and arm64 `sha256:09fb25a2…`, the exact images verified in [`evidence/gates/clean_build_*.json`](tasks/pretix-tax-compliance-chain/evidence/gates/). |
 | Browsable copy | [`tasks/pretix-tax-compliance-chain/`](tasks/pretix-tax-compliance-chain/), identical to the zip contents |
 
-**What it is.** A multi-PR feature-reconstruction task: three related tax features are removed from pretix, and the agent rebuilds them from one product ticket.
+**What it is.** A multi-PR feature-reconstruction task: three related features around taxes, fees and cancellations are removed from pretix, and the agent rebuilds them from one product ticket.
 - **GPT-5.5-high (Codex) and Claude Opus 4.7 (Claude Code) both score 0.0**, and so does GPT-5.6-sol. Every counted failure maps to a requirement stated in the instruction.
 - The oracle scores 1.0 and an empty agent scores 0.0, each repeated 3 times under Harbor.
 - The clean build is verified on **linux/amd64 and linux/arm64**.

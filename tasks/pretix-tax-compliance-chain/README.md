@@ -2,7 +2,7 @@
 
 A multi-PR feature-reconstruction task on [pretix](https://github.com/pretix/pretix), an open-source ticketing system for events and festivals.
 
-The agent works in pretix as it would look if three real, related tax features had never been built. From one product ticket it has to build all three:
+The agent works in pretix as it would look if three real, related features around taxes, fees and cancellations had never been built. From one product ticket it has to build all three:
 
 - **A. Default tax rule and fee taxation:** one default tax rule per event, payment-fee and cancellation-fee tax modes, and splitting a fee proportionally across the order's tax rates.
 - **B. Safe event cancellation:** a side-effect-free dry run that reports exactly how much money a bulk cancellation would owe back to customers.

@@ -30,16 +30,16 @@ This report covers:
 - the verifier must not be foolable.
 
 **Choosing a codebase.** I wanted a real, large, stateful domain with money in it, where "almost right" is still wrong. pretix fits well:
-- about 285k lines of Django;
+- about 170k lines of Python product code, plus 96k lines of tests, at the task's commit;
 - orders, payments, fees, taxes, refunds, check-in;
 - a deep test suite of 225 test files;
 - it runs fully offline on SQLite.
 
-**Choosing the kind of task.** I considered three kinds:
+**Choosing the kind of task: from bug fixing to feature reconstruction.** My starting point was bug fixing, since it is the most common way to build agent tasks from open-source repositories. I ruled it out before building anything. In open-source projects, a bug fix is usually a small change in one place, tied to one symptom. Frontier models find and patch those quickly, so a bug-fix task doesn't produce long-horizon work: little planning, little exploration, few linked steps. I wanted work that spans many files and many steps, and real feature work does. So I pivoted to feature reconstruction, and the PR miner drops fix, bump and revert PRs (256 of them, §3).
 
 | Option | Why I did / didn't use it |
 |---|---|
-| Bug fixing | Strong models fix isolated bugs quickly, so there's too little long-horizon work |
+| Bug fixing | Usually a small, single-location change; strong models fix these quickly, so there's too little long-horizon work |
 | New feature from scratch | There is no trusted definition of "correct", so I'd have to invent the grading |
 | **Feature reconstruction** ✅ | A feature the maintainers really built is removed, and the agent rebuilds it. The maintainers' own code is the proof it's solvable. Their tests, written before anyone knew about this task, are the grader. |
 
@@ -47,9 +47,9 @@ This report covers:
 1. Built a trustworthy Docker environment first (§2).
 2. Mined pretix's history for feature PRs and proved which ones form clean tasks (§3).
 3. Hardened and packaged the tasks, then probed single-PR tasks on frontier models (§4):
-   - #6115 (reusable-media exchange) was essentially solved in 5.5 minutes, so it was too easy;
-   - #5019 (order-level tax rounding) failed fairly, but narrowly.
-4. Took the lesson from the #5019 trace: the models get the algorithm right and fail at **applying one rule consistently across many code paths**. So I combined #5019 with the two related tax PRs it builds on into one chain (§5).
+   - #6115 (reusable-media exchange): GPT-5.5-high essentially solved it in 5.5 minutes, so a single contained feature was too easy;
+   - #5019 (order-level tax rounding), the hardest single PR: GPT-5.6-sol failed it fairly, but narrowly.
+4. Took the lesson from the #5019 trace: the models get the algorithm right and fail at **applying one rule consistently across many code paths**. So I decided to build a multi-PR feature reconstruction, combining #5019 with the two related PRs it builds on into one chain (§5).
 5. Ran the chain on the two target models and one newer model. All three failed fairly (§9), and I audited every failure against the instruction (§10).
 
 ---
