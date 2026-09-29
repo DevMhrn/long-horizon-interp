@@ -11,7 +11,7 @@ Long-horizon, hard-but-fair agent tasks built from real feature work on [pretix]
 |---|---|
 | Task | `collinear-candidate/pretix-tax-compliance-chain` |
 | Zip | [`submission/pretix-tax-compliance-chain.zip`](submission/pretix-tax-compliance-chain.zip) |
-| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `873524d838f5c85535a1b0c5e2fb6031ed46cc12cedc78b946246bfd1b5c25ab` |
+| Checksum (SHA-256) | [`submission/pretix-tax-compliance-chain.zip.sha256`](submission/pretix-tax-compliance-chain.zip.sha256): `6630406b5ebad99685433e8e917246e514f6c658cd310d4e39ed9969315e06f3` |
 | Frozen task image (proof of what was tested) | [`ghcr.io/devmhrn/pretix-tax-compliance-chain:v1`](https://github.com/users/DevMhrn/packages/container/package/pretix-tax-compliance-chain), multi-arch digest `sha256:611d41d51c79cc1eb17c2f10698ae3f2b5e4460e58b32574c7161f159475d3de`. It contains amd64 `sha256:39f48b58…` and arm64 `sha256:09fb25a2…`, the exact images verified in [`evidence/gates/clean_build_*.json`](tasks/pretix-tax-compliance-chain/evidence/gates/). |
 | Browsable copy | [`tasks/pretix-tax-compliance-chain/`](tasks/pretix-tax-compliance-chain/), identical to the zip contents |
 
