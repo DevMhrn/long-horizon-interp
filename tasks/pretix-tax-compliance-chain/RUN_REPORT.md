@@ -154,7 +154,7 @@ The tax family was the strongest:
 **The check that matters:** the restored tree is **byte-identical to the real #5019 commit**. The gold patch is exactly the difference between the base and the real commit: 42 files, +1,763 / −405.
 
 **Chain rules** (`harness/chain_members.py`):
-- at least 4 graded new tests: **517** ✅
+- at least 4 graded new tests: **517** ✅ (72 feature tests + 445 existing tests that depend on the new data model; see below)
 - every member owns at least 2: #4962 owns **17**, #5565 **23**, #5019 **32** ✅
 - no member owns 90% or more ✅
 
@@ -210,7 +210,8 @@ Every task goes through these stages in order. A stage passes only on evidence t
 | 2 | **Behaviour proof** | Does the task test the feature, fail for the right reason, and not flake? | 3 + 3 fresh runs; F2P/P2P buckets; red-before reasons; broken-by-gold; flaky exclusion | Stops tasks that are already solved, tasks red for environment reasons, and flaky grading | ✅ 517 / 1,430, 0 flaky |
 | 3 | **Chain rules** | Does every PR in the chain matter? | at least 4 total, at least 2 per member, no member at 90% or more | Stops a "chain" that is really one PR with passengers | ✅ |
 | 4 | **Package check** | Is the folder complete and leak-free? | required files; `task.toml` fields; Dockerfile policy (digest pin, no `:latest`, no tests/solution in the image, no `curl \| sh`); gold touches no tests; no secrets; size; no PR, commit, file or test names in the instruction; no implementation-only names; contract coverage | Structure mistakes and hint leaks are the most common causes of unfair or trivial tasks | ✅ 9/9 |
-| 5 | **Harbor proof** | Does the packaged task behave under the real runner? | `harbor run -a oracle` → 1.0; `-a nop` → 0.0; no errors | Stages 1–4 use plain Docker; this proves Harbor sees the same thing | ✅ |
+| 5 | **Harbor proof** | Does the packaged task behave under the real runner? | `harbor run -a oracle` → 1.0; `-a nop` → 0.0; no errors; each 3 times | Stages 1–4 use plain Docker; this proves Harbor sees the same thing | ✅ oracle 1.0 ×3, nop 0.0 ×3 |
+| 5b | **Clean build** | Does it build on a machine that has never seen it? | `environment/` built with `--no-cache --pull` on **linux/arm64 and linux/amd64**, then nop → 0.0 and oracle → 1.0 on each | Reviewers rebuild from scratch, often on amd64 | ✅ both platforms |
 | 6 | **Hardening: attacks** | Can an agent cheat? | 7 attacks run as the unprivileged `agent` (below). Each must land or be refused by the OS, and still score 0. The oracle must still score 1.0 and nop 0.0. | A hard task is worthless if gaming the grader is easier than doing the work | ✅ all blocked |
 | 7 | **Hardening: network** | Is the agent really offline except for its model? | A probe run under the real agent policy. GitHub (site, API, source zip, git) blocked; PyPI blocked; other sites blocked; model APIs reachable; runs as `agent` | The real PRs are public, so an agent with internet could copy them | ✅ |
 | 8 | **Model runs** | Does a frontier model fail, and fairly? | trace analysis per run; every failed test mapped to a ticket requirement; infra failures excluded | Separates capability failures from task mistakes | see §9–§10 |
@@ -349,15 +350,22 @@ The gold change is 42 files and about 2,200 lines, written by pretix's maintaine
 
 ---
 
-## 13. Limitations
+## 13. Limitations and what I would do with more time or credit
 
-- **One run per model on the final instruction.** The brief asks for at least 1 trial, which is met. I'd like 3–5 per model to measure a failure *rate*, but my API credit ran out.
-- **The agent's final code is inferred from traces.** Failures are observed through the tests, and the reasons are inferred from traces. Capturing a diff of the agent's final code in the verifier logs is the next improvement.
+**Limitations**
+- **One run per model on the final instruction.** The brief asks for at least 1 trial, which is met. A failure *rate* needs more trials.
+- **The agent's final code is not captured.** Failures are observed through the graded tests, and the reasons are inferred from the agents' traces: which files they edited, which tests they ran, and what they claimed. The code itself is not stored.
 - **The 445 shared tests** depend on the new `TaxRule.default` field through shared test setup. This is fair (Part A requires it), but it makes the headline count larger than the 72 tests owned by individual PRs.
 - **Hand-resolved removal.** Three conflicts and one migration dependency were resolved by hand. They are documented in §5, and they are validated by the byte-identical restored tree and the oracle pass.
-- **Platform.** The images were built and validated on linux/arm64 (Apple Silicon). The Dockerfile supports amd64, with checksums for both, but the evidence runs were arm64.
+- **Platform.** The clean build is verified on both **linux/arm64 and linux/amd64**: `--no-cache --pull`, then nop 0.0 and oracle 1.0 (`evidence/gates/clean_build_*.json`). amd64 was built on Apple Silicon through emulation, as a real `x86_64` image with no cached layers. The model runs themselves were on arm64.
 - **Harbor version.** The non-root agent user and the network allowlist need Harbor ≥ 0.23. On 0.1.x they are ignored, and the task still runs but is less hardened.
-- **Network route.** The model runs went through OpenRouter, so `openrouter.ai` is on the agent allowlist next to the OpenAI and Anthropic APIs.
+- **Network route.** The model runs went through OpenRouter, so `openrouter.ai` is on the agent allowlist next to the OpenAI and Anthropic APIs. OpenRouter only relays requests to the named model. The harnesses are the native Codex and Claude Code CLIs, and every trajectory step records the model.
+- **Network during the build.** Building the image needs internet access: GitHub for the pinned pretix commit, nodejs.org, PyPI and npm, all pinned by commit, checksum or version. The agent phase and the verifier don't have it.
+
+**With more time or credit, I would:**
+1. **Run 3–5 trials per model** (about $14 per run) to report a failure rate instead of a single failure.
+2. **Capture the agent's final code.** Keep an untouched copy of the source in a root-only folder of the image, and have the verifier write `agent.diff` into its logs before grading. The failure analysis could then quote the exact faulty lines, not just the failing behaviour. This changes the Dockerfile and `test.sh`, so it would come with a full re-validation (oracle, nop, attacks, network).
+3. **Run the target models on the single-PR probes as well** (#5019 in particular), to show how much of the difficulty comes from chaining.
 
 ---
 
@@ -384,6 +392,7 @@ python3 harness/package_check.py tasks/pretix-tax-compliance-chain
 python3 harness/redteam.py       tasks/pretix-tax-compliance-chain
 python3 harness/network_check.py tasks/pretix-tax-compliance-chain
 python3 harness/harbor_proof.py  tasks/pretix-tax-compliance-chain --repeat 3
+harness/verify_clean_build.sh    tasks/pretix-tax-compliance-chain linux/amd64   # and linux/arm64
 python3 harness/run_model.py     tasks/pretix-tax-compliance-chain --agent codex --model openai/gpt-5.5 --via openrouter
 python3 harness/run_model.py     tasks/pretix-tax-compliance-chain --agent claude-code --model anthropic/claude-opus-4.7
 python3 harness/collect_evidence.py pretix-tax-compliance-chain --screen chainA

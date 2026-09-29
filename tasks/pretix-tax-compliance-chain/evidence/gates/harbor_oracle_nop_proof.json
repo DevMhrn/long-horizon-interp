@@ -1,6 +1,6 @@
 {
   "task": "pretix-tax-compliance-chain",
-  "repeat": 1,
+  "repeat": 3,
   "ok": true,
   "checks": {
     "oracle_all_1": true,
@@ -10,25 +10,59 @@
   "runs": {
     "oracle": [
       {
-        "job": "oracle0-1790624978",
-        "trials": [
-          {
-            "trial": "pretix-tax-compliance-chain__5H75zBW",
-            "overall": 1.0,
-            "error": null
-          }
+        "job": "oracle0-1790685255",
+        "overall": [
+          1.0
+        ],
+        "errors": [
+          null
+        ]
+      },
+      {
+        "job": "oracle1-1790685395",
+        "overall": [
+          1.0
+        ],
+        "errors": [
+          null
+        ]
+      },
+      {
+        "job": "oracle2-1790685529",
+        "overall": [
+          1.0
+        ],
+        "errors": [
+          null
         ]
       }
     ],
     "nop": [
       {
-        "job": "nop0-1790625043",
-        "trials": [
-          {
-            "trial": "pretix-tax-compliance-chain__W7u2vrW",
-            "overall": 0.0,
-            "error": null
-          }
+        "job": "nop0-1790685326",
+        "overall": [
+          0.0
+        ],
+        "errors": [
+          null
+        ]
+      },
+      {
+        "job": "nop1-1790685460",
+        "overall": [
+          0.0
+        ],
+        "errors": [
+          null
+        ]
+      },
+      {
+        "job": "nop2-1790685595",
+        "overall": [
+          0.0
+        ],
+        "errors": [
+          null
         ]
       }
     ]

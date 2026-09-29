@@ -8,7 +8,9 @@ The agent works in pretix as it would look if three real, related tax features h
 - **B. Safe event cancellation:** a side-effect-free dry run that reports exactly how much money a bulk cancellation would owe back to customers.
 - **C. Order-level tax rounding:** three rounding modes with one-cent line corrections (the calculation e-invoicing standards such as EN 16931 require), applied consistently in the cart, checkout, web and API order placement, payment changes and every order change.
 
-It is graded by the original developers' tests: **517 tests must turn green** and **1,430 existing tests must stay green**.
+It is graded by the original developers' tests:
+- **517 tests must turn green.** 72 of them were written for these three features. The other 445 are existing checkout, order and API tests whose shared test setup uses the new default-tax-rule field, so they only pass once that part is built correctly.
+- **1,430 existing tests must stay green.**
 
 | | |
 |---|---|
@@ -21,11 +23,13 @@ It is graded by the original developers' tests: **517 tests must turn green** an
 
 ## Results
 
-| Model | Harness | Reward | New tests passed | Existing broken | Time |
-|---|---|---|---|---|---|
-| GPT-5.5 (reasoning effort high) | Codex 0.158.0 | **0.0** | 494 / 517 | 0 | 17 min |
-| Claude Opus 4.7 | Claude Code 2.1.284 | **0.0** | 503 / 517 | 0 | 25 min |
-| GPT-5.6-sol (reasoning effort high) | Codex 0.158.0 | **0.0** | 507 / 517 | 4 | 19 min |
+| Model | Harness | API route | Instruction | Reward | New tests passed | Existing broken | Time |
+|---|---|---|---|---|---|---|---|
+| **GPT-5.5** (reasoning effort high) | Codex 0.158.0 | OpenRouter | final | **0.0** | 494 / 517 | 0 | 17 min |
+| **Claude Opus 4.7** | Claude Code 2.1.284 | OpenRouter | final | **0.0** | 503 / 517 | 0 | 25 min |
+| GPT-5.6-sol (reasoning effort high) | Codex 0.158.0 | OpenAI API | earlier draft¹ | **0.0** | 507 / 517 | 4 | 19 min |
+
+The first two rows are the brief's target models, run on the final instruction. ¹ GPT-5.6-sol is extra evidence, run before two instruction fixes. The failures caused by that older wording are marked "not counted" in the RUN_REPORT, and its remaining failures are all fair.
 
 The oracle scores 1.0 and an empty agent scores 0.0. Every counted failure maps to a requirement stated in `instruction.md`. See **[RUN_REPORT.md](RUN_REPORT.md)** for the full story, checks, fairness audit and failure analysis, and **[evidence/](evidence/README.md)** for the raw runs.
 
@@ -52,3 +56,11 @@ harbor view ./jobs
 ```
 
 This requires Harbor ≥ 0.23, for the non-root agent user and the per-phase network allowlist.
+
+**Network during the build.** Building the image needs internet access. It downloads:
+- the pinned pretix commit from GitHub;
+- Node.js from nodejs.org (checksum-verified);
+- the pinned Python packages from PyPI;
+- the pinned Codex and Claude Code CLIs from npm.
+
+While the agent works, only the model APIs are reachable. The verifier has no network at all.

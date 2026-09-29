@@ -1,0 +1,3 @@
+{"task": "pretix-tax-compliance-chain", "platform": "linux/amd64", "image": "sha256:39f48b586a1a374e9973a8b62c2e40705b0643b01f35cad4607112caad0fc558 linux/amd64", "build_rc": 0,
+ "build_seconds": 114, "nop_seconds": 115, "oracle_seconds": 104,
+ "nop": {"overall": 0.0, "must_turn_green": 0.0, "must_stay_green": 1.0, "integrity": 1.0}, "oracle": {"overall": 1.0, "must_turn_green": 1.0, "must_stay_green": 1.0, "integrity": 1.0}}

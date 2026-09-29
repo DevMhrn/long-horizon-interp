@@ -14,7 +14,8 @@ This folder holds everything needed to check that this task is **solvable, harde
 | `gates/package_report.json` | Static checks: files, `task.toml`, Dockerfile policy, secrets, size, no leak of PR/commit/file names in the instruction, no implementation-only names, and every new name a test relies on is stated. |
 | `gates/redteam.json` | 7 cheating attempts run as the unprivileged agent user. All either landed and scored 0, or were refused by the OS. Afterwards oracle = 1.0 and nop = 0.0. |
 | `gates/network_check.json` | During the agent phase only `api.openai.com`, `api.anthropic.com` and `openrouter.ai` are reachable. GitHub, PyPI and everything else is blocked. |
-| `gates/harbor_oracle_nop_proof.json` | `harbor run -a oracle` → 1.0 and `harbor run -a nop` → 0.0, no errors. |
+| `gates/harbor_oracle_nop_proof.json` | `harbor run -a oracle` → 1.0 and `harbor run -a nop` → 0.0, each repeated 3 times, no errors. |
+| `gates/clean_build_arm64.json`, `gates/clean_build_amd64.json` | Clean-machine proof on both platforms: `environment/` built with `--no-cache --pull`, then nop → 0.0 and oracle → 1.0 with plain Docker. amd64 is a real `x86_64` image with 0 cached layers, built on Apple Silicon via emulation. Script: `harness/verify_clean_build.sh`. |
 
 ## Model runs
 
